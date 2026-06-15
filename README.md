@@ -31,4 +31,3 @@ It integrates physical hardware (barcode scanners and magstripe readers) to stre
 - [ ] Phase 2: Bulk import existing closet inventory via CSV script.
 - [ ] Phase 3: Hardware Kiosk Setup (Acquire a dedicated checkout station).
 - [ ] Phase 4: Local Web App (Flask/FastAPI) hosted on a static IP for internal UCF network access via Cisco VPN.
-```
