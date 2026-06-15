@@ -22,7 +22,7 @@ It integrates physical hardware (barcode scanners and magstripe readers) to stre
 2. Ensure Python 3.x is installed.
 3. Run the main script:
    ```bash
-   python inventory_scanner.py
+   python tracker.py
    ```
 *(Note: Upon first run, the script will automatically generate the `inventory.db` file and build the required table.)*
 
