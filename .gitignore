@@ -1,3 +1,9 @@
 *.db
 *.csv
+*.xslx
+
+*.env
+.venv/
+.vscode/
 __pycache__/
+*.pyc
