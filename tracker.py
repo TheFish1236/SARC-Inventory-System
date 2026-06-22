@@ -1,80 +1,156 @@
 import sqlite3
 import datetime
+from checkoutTest import verify_student
+import re
+import csv
 
-# 1. Connect to the database (This creates 'inventory.db' in your folder if it doesn't exist)
-conn = sqlite3.connect('inventory.db')
-cursor = conn.cursor()
-
-# 2. Create your table (Using basic SQL)
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS devices (
-        barcode_id TEXT PRIMARY KEY,    /* Your sticker: SARC-Laptop-1 */
-        equipment_type TEXT,            /* Laptop, iPad, etc. */
-        brand_model TEXT,               /* Dell Latitude, iPad Pro */
-        service_tag TEXT,               /* The manufacturer serial number */
-        status TEXT,                    /* Available / Checked Out */
-        current_ucf_id TEXT,            /* Who currently holds it? (NULL if in closet) */
-        last_updated TEXT
-    )
-''')
-
-# 3. Add a test laptop to your database (You'll eventually loop this to add all 30)
-cursor.execute('''
-    INSERT OR IGNORE INTO devices (barcode_id, device_type, status, last_updated)
-    VALUES ('SARC-Laptop-1;', 'Laptop', 'Available', 'Never')
-''')
-conn.commit()
-
-# 4. The Scanner Loop (The core logic!)
-print("--- Inventory Scanner System Active ---")
-print("Scan an item (or type 'exit' to quit):")
-
-while True:
-    # The scanner will type the barcode and hit enter automatically!
-    scanned_input = input("> ") 
+def backup_to_cloud():
+    onedrive_path = r"C:\\Users\\mu630245\\OneDrive - University of Central Florida\\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\\Equipment Tracking\\SARC_Live_Inventory.csv"
     
-    if scanned_input.lower() == 'exit':
-        break
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, last_updated, notes FROM serialized_assets")
+    rows = cursor.fetchall()
+    
+    with open(onedrive_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Last Updated', 'Notes'])
+        writer.writerows(rows)
         
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.close()
+    print("Live backup synced to OneDrive for Boss.")
+
+
+def parse_ucf_id(raw_input):
+    raw_input = raw_input.strip() 
     
-    # 1. Look up the current status of the scanned item
-    cursor.execute("SELECT status FROM devices WHERE barcode_id = ?", (scanned_input,))
-    result = cursor.fetchone() # This grabs the row from the database
+    # 1. Did you manually type it?
+    if raw_input.isdigit() and len(raw_input) == 7:
+        return raw_input
+        
+    # 2. Was it a GOOD card swipe? (Track 1 always has '^')
+    if '^' in raw_input:
+        parts = raw_input.split('^')
+        if len(parts) >= 3: # Make sure there are at least 3 parts
+            # Look for the numbers right at the start of parts[2]
+            match = re.search(r'^\d+', parts[2])
+            if match:
+                long_num = match.group(0)
+                return long_num[-7:]
+                
+    # 3. Was it a BAD card swipe?
+    if '^' not in raw_input:
+        print("Bad swipe! Please try again.")
+        return None
+                
+    return raw_input
+
+def connect_db():
+    return sqlite3.connect('inventory.db')
+
+def checkout_item():
+    raw_swipe = input("\nSwipe Card (or type 7-digit UCF ID): ")
+    ucf_id = parse_ucf_id(raw_swipe)
+    if ucf_id is None:
+        return
+    
+    # 1. API Magic: Check Qualtrics
+    print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
+    is_verified = verify_student(ucf_id)
+    
+    if not is_verified:
+        print("Cannot proceed. Have the student fill out the Check-Out Agreement.")
+        return
+
+    # 2. Scanner Magic: Assign the item
+    barcode = input("Scan Equipment Barcode: ")
+    
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    # Check if the item exists and is actually available
+    cursor.execute("SELECT status, equipment_type, brand_model FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    result = cursor.fetchone()
     
     if result is None:
-        print(f"ERROR: {scanned_input} is not in the system.")
-        continue # Skip the rest of the loop and wait for the next scan
+        print(f"ERROR: Barcode '{barcode}' not found in database.")
+        return
         
-    current_status = result[0] # fetchone() returns a tuple like ('Available',), so we grab the first item
+    current_status, eq_type, model = result
     
-    # 2. Your If-Statement logic!
-    if current_status == 'Available':
-        # It's in the closet, so we are checking it OUT
-        new_status = 'Checked Out'
-        print(f"Checking OUT: {scanned_input}")
+    if current_status == 'Checked Out':
+        print(f"WARNING: {barcode} is already checked out to someone else!")
+        return
         
-        # Ask who is taking it!
-        ucf_id = input("Enter Employee UCF ID: ")
-        
-        cursor.execute('''
-            UPDATE devices 
-            SET status = ?, current_ucf_id = ?, last_updated = ? 
-            WHERE barcode_id = ?
-        ''', (new_status, ucf_id, current_time, scanned_input))
-
-    else:
-        # It's checked out, so we are checking it back IN
-        new_status = 'Available'
-        print(f"Checking IN: {scanned_input}")
-        
-        # Clear out the user ID since it's back in the closet
-        cursor.execute('''
-            UPDATE devices 
-            SET status = ?, current_ucf_id = NULL, last_updated = ? 
-            WHERE barcode_id = ?
-        ''', (new_status, current_time, scanned_input))
+    # 3. Database Magic: Update the record
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute('''
+        UPDATE serialized_assets 
+        SET status = 'Checked Out', current_ucf_id = ?, last_updated = ? 
+        WHERE barcode_id = ?
+    ''', (ucf_id, current_time, barcode))
     
     conn.commit()
+    conn.close()
+    print(f"SUCCESS: {eq_type} ({model}) checked out to {ucf_id}.")
+    backup_to_cloud()
 
-conn.close()
+
+def return_item():
+    barcode = input("\nScan Equipment Barcode to Return: ")
+    
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    # Look up the item
+    cursor.execute("SELECT status, equipment_type, current_ucf_id FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    result = cursor.fetchone()
+    
+    if result is None:
+        print(f"ERROR: Barcode '{barcode}' not found in database.")
+        return
+        
+    current_status, eq_type, previous_owner = result
+    
+    if current_status == 'Available':
+        print(f"WARNING: {barcode} is already marked as Available in the closet.")
+        return
+        
+    # Update the database
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute('''
+        UPDATE serialized_assets 
+        SET status = 'Available', current_ucf_id = NULL, last_updated = ? 
+        WHERE barcode_id = ?
+    ''', (current_time, barcode))
+    
+    conn.commit()
+    conn.close()
+    print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {previous_owner})")
+    print("Don't forget to have them scan the QR code for the Return Survey!")
+    backup_to_cloud()
+
+# THE MAIN LOOP
+def main():
+    print("\nSARC INVENTORY MANAGEMENT SYSTEM")
+    
+    while True:
+        print("\nMain Menu:")
+        print("1. Check-Out Equipment")
+        print("2. Return Equipment")
+        print("3. Exit")
+        
+        choice = input("\nSelect an option (1-3): ")
+        
+        if choice == '1':
+            checkout_item()
+        elif choice == '2':
+            return_item()
+        elif choice == '3':
+            print("Shutting down tracker. Goodbye!")
+            break
+        else:
+            print("Invalid choice. Please type 1, 2, or 3.")
+
+if __name__ == "__main__":
+    main()
