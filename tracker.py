@@ -3,22 +3,39 @@ import datetime
 from checkoutTest import verify_student
 import re
 import csv
+import shutil
 
 def backup_to_cloud():
-    onedrive_path = r"C:\\Users\\mu630245\\OneDrive - University of Central Florida\\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\\Equipment Tracking\\SARC_Live_Inventory.csv"
+    # Your OneDrive Paths
+    onedrive_csv = r"C:\Users\mu630245\OneDrive - University of Central Florida\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\Equipment Tracking\SARC_Live_Inventory.csv"
+    onedrive_db = r"C:\Users\mu630245\OneDrive - University of Central Florida\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\Equipment Tracking\inventory_backup.db"
     
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, last_updated, notes FROM serialized_assets")
     rows = cursor.fetchall()
     
-    with open(onedrive_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Last Updated', 'Notes'])
-        writer.writerows(rows)
+    try:
+        # 1. Back up the CSV for the Boss
+        with open(onedrive_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Last Updated', 'Notes'])
+            writer.writerows(rows)
+            
+        # 2. Back up the raw DB
+        shutil.copy2('inventory.db', onedrive_db)
         
-    conn.close()
-    print("Live backup synced to OneDrive for Boss.")
+        print("Live backups (CSV and DB) synced to OneDrive.")
+        
+    except PermissionError:
+        print("\nWARNING: Could not update OneDrive. Someone has the file open!")
+        print("Local database updated successfully. Cloud will catch up on the next scan.")
+        
+    except Exception as e:
+        print(f"\nWARNING: Cloud sync failed: {e}")
+        
+    finally:
+        conn.close()
 
 
 def parse_ucf_id(raw_input):
@@ -78,8 +95,8 @@ def checkout_item():
         
     current_status, eq_type, model = result
     
-    if current_status == 'Checked Out':
-        print(f"WARNING: {barcode} is already checked out to someone else!")
+    if current_status != 'Available':
+        print(f"⚠️ WARNING: {barcode} cannot be checked out. Current status: {current_status}")
         return
         
     # 3. Database Magic: Update the record
