@@ -4,6 +4,25 @@ from checkoutTest import verify_student
 import re
 import csv
 import shutil
+import os
+
+def log_transaction(action, barcode, equipment_type, ucf_id):
+    log_path = r"C:\Users\mu630245\OneDrive - University of Central Florida\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\Equipment Tracking\SARC_History_Log.csv"
+    
+    file_exists = os.path.isfile(log_path)
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    try:
+        with open(log_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # If the file doesn't exist yet, write the headers first
+            if not file_exists:
+                writer.writerow(['Timestamp', 'Action', 'Barcode ID', 'Equipment Type', 'UCF ID'])
+            
+            # Write the actual transaction
+            writer.writerow([current_time, action, barcode, equipment_type, ucf_id])
+    except PermissionError:
+        print("Warning: History Log is open in Excel, could not append transaction.")
 
 def backup_to_cloud():
     # Your OneDrive Paths
