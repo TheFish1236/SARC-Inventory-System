@@ -129,6 +129,7 @@ def checkout_item():
     conn.commit()
     conn.close()
     print(f"SUCCESS: {eq_type} ({model}) checked out to {ucf_id}.")
+    log_transaction("CHECK-OUT", barcode, eq_type, ucf_id)
     backup_to_cloud()
 
 
@@ -164,6 +165,7 @@ def return_item():
     conn.close()
     print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {previous_owner})")
     print("Don't forget to have them scan the QR code for the Return Survey!")
+    log_transaction("RETURN", barcode, eq_type, previous_owner)
     backup_to_cloud()
 
 # THE MAIN LOOP
