@@ -1,6 +1,8 @@
 import sqlite3
 import csv
 import datetime
+import shutil
+import os
 
 def setup_database():
     # 1. Connect to SQLite (This creates inventory.db if it doesn't exist)
@@ -66,7 +68,26 @@ def setup_database():
     # 6. Save and Close
     conn.commit()
     conn.close()
-    print("Database successfully built")
+
+    print("Pushing fresh database to OneDrive...")
+    user_profile = os.environ.get('USERPROFILE')
+    
+    # Update this path if it's different!
+    onedrive_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking")
+    files_to_backup = ['inventory.db', 'serialized_assets.csv', 'bulk_assets.csv']
+    
+    for file_name in files_to_backup:
+        try:
+            if os.path.exists(file_name):
+                # Copies the file into the OneDrive folder
+                shutil.copy2(file_name, os.path.join(onedrive_dir, file_name))
+                print(f"  -> Synced {file_name}")
+            else:
+                print(f"  -> Skipped {file_name} (File not found)")
+        except Exception as e:
+            print(f"Could not sync {file_name} to cloud: {e}")
+            
+    print("Cloud synced successfully!")
 
 if __name__ == "__main__":
     setup_database()

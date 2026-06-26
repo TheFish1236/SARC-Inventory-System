@@ -7,7 +7,8 @@ import shutil
 import os
 
 def log_transaction(action, barcode, equipment_type, ucf_id):
-    log_path = r"C:\Users\mu630245\OneDrive - University of Central Florida\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\Equipment Tracking\SARC_History_Log.csv"
+    user_profile = os.environ.get('USERPROFILE')
+    log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "SARC_History_Log.csv")
     
     file_exists = os.path.isfile(log_path)
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -25,9 +26,9 @@ def log_transaction(action, barcode, equipment_type, ucf_id):
         print("Warning: History Log is open in Excel, could not append transaction.")
 
 def backup_to_cloud():
-    # Your OneDrive Paths
-    onedrive_csv = r"C:\Users\mu630245\OneDrive - University of Central Florida\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\Equipment Tracking\SARC_Live_Inventory.csv"
-    onedrive_db = r"C:\Users\mu630245\OneDrive - University of Central Florida\UCFTeam-SARC_GRP - Technology Assistant\Archived Tech Assistant Files\Equipment Tracking\inventory_backup.db"
+    user_profile = os.environ.get('USERPROFILE')
+    onedrive_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "SARC_Live_Inventory.csv")
+    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "inventory_backup.db")
     
     conn = connect_db()
     cursor = conn.cursor()
@@ -86,9 +87,16 @@ def connect_db():
 
 def checkout_item():
     raw_swipe = input("\nSwipe Card (or type 7-digit UCF ID): ")
-    ucf_id = parse_ucf_id(raw_swipe)
+
+    if raw_swipe.upper().startswith("SARC-"):
+        print("You scanned an equipment barcode. Please swipe the UCF ID card first.")
+        return
+    
     if ucf_id is None:
         return
+    
+
+    ucf_id = parse_ucf_id(raw_swipe)
     
     # 1. API Magic: Check Qualtrics
     print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
