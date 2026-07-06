@@ -1,12 +1,12 @@
 import sqlite3
 import datetime
-from checkoutTest import verify_student
+from qualtrics_api import verify_student
 import re
 import csv
 import shutil
 import os
 
-def log_transaction(action, barcode, equipment_type, ucf_id):
+def log_transaction(action, barcode, equipment_type, ucf_id, student_name):
     user_profile = os.environ.get('USERPROFILE')
     log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "SARC_History_Log.csv")
     
@@ -16,12 +16,10 @@ def log_transaction(action, barcode, equipment_type, ucf_id):
     try:
         with open(log_path, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            # If the file doesn't exist yet, write the headers first
             if not file_exists:
-                writer.writerow(['Timestamp', 'Action', 'Barcode ID', 'Equipment Type', 'UCF ID'])
-            
-            # Write the actual transaction
-            writer.writerow([current_time, action, barcode, equipment_type, ucf_id])
+                writer.writerow(['Timestamp', 'Action', 'Barcode ID', 'Equipment Type', 'UCF ID', 'Name'])
+            writer.writerow([current_time, action, barcode, equipment_type, ucf_id, student_name])
+
     except PermissionError:
         print("Warning: History Log is open in Excel, could not append transaction.")
 
@@ -32,14 +30,14 @@ def backup_to_cloud():
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, last_updated, notes FROM serialized_assets")
+    cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, last_updated, notes FROM serialized_assets")
     rows = cursor.fetchall()
     
     try:
         # 1. Back up the CSV for the Boss
         with open(onedrive_csv, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Last Updated', 'Notes'])
+            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Last Updated', 'Notes'])
             writer.writerows(rows)
             
         # 2. Back up the raw DB
@@ -92,19 +90,28 @@ def checkout_item():
         print("You scanned an equipment barcode. Please swipe the UCF ID card first.")
         return
     
+    ucf_id = parse_ucf_id(raw_swipe)
     if ucf_id is None:
         return
     
-
-    ucf_id = parse_ucf_id(raw_swipe)
-    
     # 1. API Magic: Check Qualtrics
     print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
-    is_verified = verify_student(ucf_id)
+    
+    # Unpack the two variables returned by the API
+    is_verified, student_name = verify_student(ucf_id)
+    action_type = "CHECK-OUT"
     
     if not is_verified:
-        print("Cannot proceed. Have the student fill out the Check-Out Agreement.")
-        return
+        print("Agreement not found in Qualtrics (or system offline).")
+        force = input("OVERRIDE: Do you want to FORCE check-out anyway? (Y/N): ")
+        if force.strip().upper() == 'Y':
+            print("Forcing Checkout...")
+            # Ask for the name since we don't have the form!
+            student_name = input("Enter Student First and Last Name: ").strip()
+            action_type = "CHECK-OUT (OVERRIDE)"
+        else:
+            print("Checkout aborted.")
+            return
 
     # 2. Scanner Magic: Assign the item
     barcode = input("Scan Equipment Barcode: ")
@@ -112,32 +119,40 @@ def checkout_item():
     conn = connect_db()
     cursor = conn.cursor()
     
-    # Check if the item exists and is actually available
-    cursor.execute("SELECT status, equipment_type, brand_model FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    # Check if the item exists (Notice we added 'notes' to the SELECT statement!)
+    cursor.execute("SELECT status, equipment_type, brand_model, notes FROM serialized_assets WHERE barcode_id = ?", (barcode,))
     result = cursor.fetchone()
     
     if result is None:
         print(f"ERROR: Barcode '{barcode}' not found in database.")
         return
         
-    current_status, eq_type, model = result
+    current_status, eq_type, model, notes = result
     
     if current_status != 'Available':
-        print(f"⚠️ WARNING: {barcode} cannot be checked out. Current status: {current_status}")
+        print(f"WARNING: {barcode} cannot be checked out. Current status: {current_status}")
         return
+        
+    # --- NOTES WARNING (For Study Union / Restrictions) ---
+    if notes and notes.strip():
+        print(f"\nALERT ON ITEM: {notes}")
+        confirm = input("Are you sure you want to proceed with this checkout? (Y/N): ")
+        if confirm.strip().upper() != 'Y':
+            print("Checkout aborted by user.")
+            return
         
     # 3. Database Magic: Update the record
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute('''
         UPDATE serialized_assets 
-        SET status = 'Checked Out', current_ucf_id = ?, last_updated = ? 
+        SET status = 'Checked Out', current_ucf_id = ?, current_name = ?, last_updated = ? 
         WHERE barcode_id = ?
-    ''', (ucf_id, current_time, barcode))
+    ''', (ucf_id, student_name, current_time, barcode))
     
     conn.commit()
     conn.close()
-    print(f"SUCCESS: {eq_type} ({model}) checked out to {ucf_id}.")
-    log_transaction("CHECK-OUT", barcode, eq_type, ucf_id)
+    print(f"SUCCESS: {eq_type} ({model}) checked out to {student_name} ({ucf_id}).")
+    log_transaction("CHECK-OUT", barcode, eq_type, ucf_id, student_name)
     backup_to_cloud()
 
 
@@ -147,36 +162,38 @@ def return_item():
     conn = connect_db()
     cursor = conn.cursor()
     
-    # Look up the item
-    cursor.execute("SELECT status, equipment_type, current_ucf_id FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    # 1. Look up the item
+    cursor.execute("SELECT status, equipment_type, current_ucf_id, current_name FROM serialized_assets WHERE barcode_id = ?", (barcode,))
     result = cursor.fetchone()
     
     if result is None:
         print(f"ERROR: Barcode '{barcode}' not found in database.")
         return
         
-    current_status, eq_type, previous_owner = result
+    current_status, eq_type, previous_owner, previous_owner_name = result
     
     if current_status == 'Available':
         print(f"WARNING: {barcode} is already marked as Available in the closet.")
         return
         
-    # Update the database
+    # 2. Update the database (Instant Return)
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute('''
         UPDATE serialized_assets 
-        SET status = 'Available', current_ucf_id = NULL, last_updated = ? 
+        SET status = 'Available', current_ucf_id = NULL, current_name = NULL, last_updated = ? 
         WHERE barcode_id = ?
     ''', (current_time, barcode))
     
     conn.commit()
     conn.close()
-    print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {previous_owner})")
-    print("Don't forget to have them scan the QR code for the Return Survey!")
-    log_transaction("RETURN", barcode, eq_type, previous_owner)
+    
+    print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {previous_owner_name})")
+    print("Instruct the student to scan the QR code to submit the Return Survey on their way out!")
+    
+    # 3. Log the event and backup
+    log_transaction("RETURN", barcode, eq_type, previous_owner, previous_owner_name)
     backup_to_cloud()
 
-# THE MAIN LOOP
 def main():
     print("\nSARC INVENTORY MANAGEMENT SYSTEM")
     

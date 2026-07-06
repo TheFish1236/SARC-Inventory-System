@@ -23,6 +23,7 @@ def setup_database():
             status TEXT,
             notes TEXT,
             current_ucf_id TEXT,
+            current_name TEXT, 
             last_updated TEXT
         )
     ''')
@@ -48,8 +49,8 @@ def setup_database():
         for row in csv_reader:
             cursor.execute('''
                 INSERT INTO serialized_assets 
-                (barcode_id, equipment_type, brand_model, service_tag, status, notes, current_ucf_id, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                (barcode_id, equipment_type, brand_model, service_tag, status, notes, current_ucf_id, current_name, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
             ''', (row['barcode_id'], row['equipment_type'], row['brand_model'], row['service_tag'], row['status'], row['notes'], current_time)
             )
 
@@ -72,16 +73,21 @@ def setup_database():
     print("Pushing fresh database to OneDrive...")
     user_profile = os.environ.get('USERPROFILE')
     
-    # Update this path if it's different!
     onedrive_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking")
     files_to_backup = ['inventory.db', 'serialized_assets.csv', 'bulk_assets.csv']
     
     for file_name in files_to_backup:
         try:
             if os.path.exists(file_name):
+                # FIXED: Rename the database to match the tracker backup name
+                if file_name == 'inventory.db':
+                    dest_name = 'inventory_backup.db'
+                else:
+                    dest_name = file_name
+                    
                 # Copies the file into the OneDrive folder
-                shutil.copy2(file_name, os.path.join(onedrive_dir, file_name))
-                print(f"  -> Synced {file_name}")
+                shutil.copy2(file_name, os.path.join(onedrive_dir, dest_name))
+                print(f"  -> Synced {file_name} to cloud as {dest_name}")
             else:
                 print(f"  -> Skipped {file_name} (File not found)")
         except Exception as e:
