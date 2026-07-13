@@ -18,7 +18,7 @@ url = f"https://{data_center}/API/v3/survey-definitions/{survey}"
 headers = {"x-api-token": api_key}
 
 def clean_text(html_text):
-    # This Regex magic strips away all HTML tags (like <div>, <strong>, etc.)
+    # This Regex magic strips away all HTML tags
     text = re.sub('<[^<]+>', '', html_text)
     # This removes weird line breaks and spaces
     return " ".join(text.split())
@@ -34,7 +34,6 @@ if response.status_code == 200:
         text = clean_text(q_info['QuestionText'])
         print(f"\n{qid} -> {text}")
         
-        # If the question has multiple blanks, we dig deeper!
         if 'Choices' in q_info:
             for choice_id, choice_info in q_info['Choices'].items():
                 choice_text = clean_text(choice_info.get('Display', ''))

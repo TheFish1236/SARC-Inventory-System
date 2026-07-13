@@ -12,10 +12,7 @@ load_dotenv()
 
 api_key = os.getenv("QUALTRICS_API_TOKEN")
 data_center = os.getenv("DATA_CENTER")
-
-# Load both Survey IDs!
 checkout_id = os.getenv("SURVEY_CHECKOUT")
-return_id = os.getenv("SURVEY_RETURN")
 
 headers = {
     "x-api-token": api_key,
@@ -57,10 +54,13 @@ def verify_student(target_ucf_id):
         responses = get_survey_data(checkout_id)
     except ConnectionError:
         print("\nCRITICAL: No Internet Connection Detected!")
-        return False
+        return "OFFLINE", None, None, None
         
     if not responses:
-        return False
+        return "NOT_FOUND", None, None, None
+    
+    best_match_values = None
+    is_fresh = False
     
     print(f"\nSearching for completed CHECK-OUT agreements by UCF ID: {target_ucf_id}...")
     for response in responses:
@@ -69,51 +69,35 @@ def verify_student(target_ucf_id):
         # Match UCF ID (with .zfill(7) protection)
         if str(values.get('QID1_3')).zfill(7) == str(target_ucf_id).zfill(7):
             if values.get('finished') == 1:
+                # Keep track of this as a match
+                best_match_values = values
                 end_date_str = values.get('endDate')
 
                 if end_date_str:
                     try:
-                        # Clean the ISO timestamp for Python
                         clean_date = end_date_str.replace('Z', '+00:00')
                         submit_time = datetime.fromisoformat(clean_date)
                         now = datetime.now(timezone.utc)
                         
-                        # If the submission is older than 12 hours, reject it!
-                        if now - submit_time > timedelta(hours=12):
-                            print(f"ERROR: Agreement found, but it is EXPIRED (submitted {end_date_str}).")
-                            return False
+                        # If we find a fresh submission, we immediately use it and stop searching
+                        if now - submit_time <= timedelta(hours=12):
+                            is_fresh = True
+                            break
+                        
                     except Exception as e:
                         print(f"Warning: Could not verify timestamp: {e}")
                 
-                first_name = values.get('QID1_1', 'Unknown')
-                last_name = values.get('QID1_2', 'Unknown')
-                full_name = f"{first_name} {last_name}".strip()
-                print(f"SUCCESS: {full_name}'s agreement is signed and fully verified.")
-                return True, full_name
-            
-            else:
-                print(f"WARNING: Found {target_ucf_id}, but they didn't hit submit!")
-                return False, None
-                
-    return False, None
-
-def verify_return(target_ucf_id):
-    try:
-        responses = get_survey_data(return_id)
-    except ConnectionError:
-        print("\nCRITICAL: No Internet Connection Detected!")
-        return False
+    if best_match_values:
+        first_name = best_match_values.get('QID1_1', 'Unknown')
+        last_name = best_match_values.get('QID1_2', 'Unknown')
+        full_name = f"{first_name} {last_name}".strip()
+        position = best_match_values.get('QID1_4', 'Unknown')
+        email = best_match_values.get('QID1_5', 'Unknown')
         
-    if not responses:
-        return False
-    
-    print(f"\nSearching for completed RETURN surveys by UCF ID: {target_ucf_id}...")
-    for response in responses:
-        values = response['values']
-        if str(values.get('QID1_3')).zfill(7) == str(target_ucf_id).zfill(7):
-            if values.get('finished') == 1:
-                return True
-            else:
-                print(f"WARNING: Found {target_ucf_id}, but they didn't hit submit!")
-                return False
-    return False
+        if is_fresh:
+            print(f"SUCCESS: {full_name} ({position}) agreement verified.")
+            return "VERIFIED", full_name, position, email
+        else:
+            return "EXPIRED", full_name, position, email
+
+    return "NOT_FOUND", None, None, None

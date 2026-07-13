@@ -5,14 +5,11 @@ import shutil
 import os
 
 def setup_database():
-    # 1. Connect to SQLite (This creates inventory.db if it doesn't exist)
     conn = sqlite3.connect('inventory.db')
     cursor = conn.cursor()
 
-    print("Building database tables...")
+    print("Building database tables with upgraded schema...")
 
-    # 2. Create the Serialized Assets Table
-    # We use DROP TABLE IF EXISTS so you can re-run this script safely if you ever make a mistake in your CSV!
     cursor.execute('DROP TABLE IF EXISTS serialized_assets')
     cursor.execute('''
         CREATE TABLE serialized_assets (
@@ -23,12 +20,14 @@ def setup_database():
             status TEXT,
             notes TEXT,
             current_ucf_id TEXT,
-            current_name TEXT, 
+            current_name TEXT,
+            current_position TEXT,
+            current_email TEXT,
+            current_duration TEXT,
             last_updated TEXT
         )
     ''')
 
-    # 3. Create the Bulk Assets Table
     cursor.execute('DROP TABLE IF EXISTS bulk_assets')
     cursor.execute('''
         CREATE TABLE bulk_assets (
@@ -42,19 +41,18 @@ def setup_database():
 
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 4. Import Serialized Assets
     print("Importing serialized_assets.csv...")
     with open('serialized_assets.csv', 'r', encoding='utf-8') as file:
         csv_reader = csv.DictReader(file)
         for row in csv_reader:
             cursor.execute('''
                 INSERT INTO serialized_assets 
-                (barcode_id, equipment_type, brand_model, service_tag, status, notes, current_ucf_id, current_name, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                (barcode_id, equipment_type, brand_model, service_tag, status, notes, 
+                 current_ucf_id, current_name, current_position, current_email, current_duration, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)
             ''', (row['barcode_id'], row['equipment_type'], row['brand_model'], row['service_tag'], row['status'], row['notes'], current_time)
             )
 
-    # 5. Import Bulk Assets
     print("Importing bulk_assets.csv...")
     with open('bulk_assets.csv', 'r', encoding='utf-8') as file:
         csv_reader = csv.DictReader(file)
@@ -66,11 +64,10 @@ def setup_database():
             ''', (row['item_name'], row['quantity'], row['category'], row['notes'], current_time)
             )
 
-    # 6. Save and Close
     conn.commit()
     conn.close()
 
-    print("Pushing fresh database to OneDrive...")
+    print("Pushing fresh database and source CSVs to OneDrive...")
     user_profile = os.environ.get('USERPROFILE')
     
     onedrive_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking")
@@ -79,13 +76,11 @@ def setup_database():
     for file_name in files_to_backup:
         try:
             if os.path.exists(file_name):
-                # FIXED: Rename the database to match the tracker backup name
                 if file_name == 'inventory.db':
                     dest_name = 'inventory_backup.db'
                 else:
                     dest_name = file_name
                     
-                # Copies the file into the OneDrive folder
                 shutil.copy2(file_name, os.path.join(onedrive_dir, dest_name))
                 print(f"  -> Synced {file_name} to cloud as {dest_name}")
             else:

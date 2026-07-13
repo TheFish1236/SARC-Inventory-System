@@ -6,7 +6,7 @@ import csv
 import shutil
 import os
 
-def log_transaction(action, barcode, equipment_type, ucf_id, student_name):
+def log_transaction(action, barcode, equipment_type, ucf_id, student_name, position, email, duration):
     user_profile = os.environ.get('USERPROFILE')
     log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "SARC_History_Log.csv")
     
@@ -17,8 +17,8 @@ def log_transaction(action, barcode, equipment_type, ucf_id, student_name):
         with open(log_path, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(['Timestamp', 'Action', 'Barcode ID', 'Equipment Type', 'UCF ID', 'Name'])
-            writer.writerow([current_time, action, barcode, equipment_type, ucf_id, student_name])
+                writer.writerow(['Timestamp', 'Action', 'Barcode ID', 'Equipment Type', 'UCF ID', 'Name', 'Position', 'Email', 'Duration'])
+            writer.writerow([current_time, action, barcode, equipment_type, ucf_id, student_name, position, email, duration])
 
     except PermissionError:
         print("Warning: History Log is open in Excel, could not append transaction.")
@@ -30,19 +30,16 @@ def backup_to_cloud():
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, last_updated, notes FROM serialized_assets")
+    cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, current_position, current_email, current_duration, last_updated, notes FROM serialized_assets")
     rows = cursor.fetchall()
     
     try:
-        # 1. Back up the CSV for the Boss
         with open(onedrive_csv, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Last Updated', 'Notes'])
+            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Position', 'Email', 'Duration', 'Last Updated', 'Notes'])
             writer.writerows(rows)
             
-        # 2. Back up the raw DB
         shutil.copy2('inventory.db', onedrive_db)
-        
         print("Live backups (CSV and DB) synced to OneDrive.")
         
     except PermissionError:
@@ -55,29 +52,20 @@ def backup_to_cloud():
     finally:
         conn.close()
 
-
 def parse_ucf_id(raw_input):
     raw_input = raw_input.strip() 
-    
-    # 1. Did you manually type it?
     if raw_input.isdigit() and len(raw_input) == 7:
         return raw_input
-        
-    # 2. Was it a GOOD card swipe? (Track 1 always has '^')
     if '^' in raw_input:
         parts = raw_input.split('^')
-        if len(parts) >= 3: # Make sure there are at least 3 parts
-            # Look for the numbers right at the start of parts[2]
+        if len(parts) >= 3:
             match = re.search(r'^\d+', parts[2])
             if match:
                 long_num = match.group(0)
                 return long_num[-7:]
-                
-    # 3. Was it a BAD card swipe?
     if '^' not in raw_input:
         print("Bad swipe! Please try again.")
         return None
-                
     return raw_input
 
 def connect_db():
@@ -97,18 +85,38 @@ def checkout_item():
     # 1. API Magic: Check Qualtrics
     print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
     
-    # Unpack the two variables returned by the API
-    is_verified, student_name = verify_student(ucf_id)
+    # Unpack the variables returned by the API
+    status, student_name, position, email = verify_student(ucf_id)
     action_type = "CHECK-OUT"
+    duration = "Fall 2026"
     
-    if not is_verified:
-        print("Agreement not found in Qualtrics (or system offline).")
-        force = input("OVERRIDE: Do you want to FORCE check-out anyway? (Y/N): ")
+    if status == "VERIFIED":
+        # Process normally
+        pass
+        
+    elif status == "EXPIRED":
+        print(f"Agreement found for {student_name}, but it is EXPIRED (submitted >12 hours ago).")
+        force = input("ADMIN OVERRIDE: Do you want to FORCE check-out anyway using this existing data? (Y/N): ")
+        if force.strip().upper() == 'Y':
+            print("Forcing Checkout with existing Qualtrics data...")
+            action_type = "CHECK-OUT (OVERRIDE - EXPIRED FORM)"
+        else:
+            print("Checkout aborted.")
+            return
+            
+    elif status in ("NOT_FOUND", "OFFLINE"):
+        if status == "NOT_FOUND":
+            print("Agreement not found in Qualtrics.")
+        else:
+            print("System offline. Cannot verify agreement.")
+            
+        force = input("OVERRIDE: Do you want to FORCE check-out anyway with manual entry? (Y/N): ")
         if force.strip().upper() == 'Y':
             print("Forcing Checkout...")
-            # Ask for the name since we don't have the form!
             student_name = input("Enter Student First and Last Name: ").strip()
-            action_type = "CHECK-OUT (OVERRIDE)"
+            position = input("Enter Position: ").strip()
+            email = input("Enter UCF Email: ").strip()
+            action_type = "CHECK-OUT (OVERRIDE - NO FORM)"
         else:
             print("Checkout aborted.")
             return
@@ -118,8 +126,6 @@ def checkout_item():
     
     conn = connect_db()
     cursor = conn.cursor()
-    
-    # Check if the item exists (Notice we added 'notes' to the SELECT statement!)
     cursor.execute("SELECT status, equipment_type, brand_model, notes FROM serialized_assets WHERE barcode_id = ?", (barcode,))
     result = cursor.fetchone()
     
@@ -133,26 +139,36 @@ def checkout_item():
         print(f"WARNING: {barcode} cannot be checked out. Current status: {current_status}")
         return
         
-    # --- NOTES WARNING (For Study Union / Restrictions) ---
     if notes and notes.strip():
         print(f"\nALERT ON ITEM: {notes}")
         confirm = input("Are you sure you want to proceed with this checkout? (Y/N): ")
         if confirm.strip().upper() != 'Y':
             print("Checkout aborted by user.")
             return
-        
-    # 3. Database Magic: Update the record
+
+    new_note = input("Add a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if new_note:
+        timestamp_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        formatted_note = f"[{timestamp_date}: {new_note}]"
+        final_notes = f"{notes} | {formatted_note}" if notes and notes.strip() else formatted_note
+    else:
+        final_notes = notes
+
     cursor.execute('''
         UPDATE serialized_assets 
-        SET status = 'Checked Out', current_ucf_id = ?, current_name = ?, last_updated = ? 
+        SET status = 'Checked Out', current_ucf_id = ?, current_name = ?, 
+            current_position = ?, current_email = ?, current_duration = ?, 
+            last_updated = ?, notes = ? 
         WHERE barcode_id = ?
-    ''', (ucf_id, student_name, current_time, barcode))
+    ''', (ucf_id, student_name, position, email, duration, current_time, final_notes, barcode))
     
     conn.commit()
     conn.close()
+    
     print(f"SUCCESS: {eq_type} ({model}) checked out to {student_name} ({ucf_id}).")
-    log_transaction("CHECK-OUT", barcode, eq_type, ucf_id, student_name)
+    log_transaction(action_type, barcode, eq_type, ucf_id, student_name, position, email, duration)
     backup_to_cloud()
 
 
@@ -161,37 +177,44 @@ def return_item():
     
     conn = connect_db()
     cursor = conn.cursor()
-    
-    # 1. Look up the item
-    cursor.execute("SELECT status, equipment_type, current_ucf_id, current_name FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    cursor.execute("SELECT status, equipment_type, current_ucf_id, current_name, current_position, current_email, current_duration, notes FROM serialized_assets WHERE barcode_id = ?", (barcode,))
     result = cursor.fetchone()
     
     if result is None:
         print(f"ERROR: Barcode '{barcode}' not found in database.")
         return
         
-    current_status, eq_type, previous_owner, previous_owner_name = result
+    current_status, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur, notes = result
     
     if current_status == 'Available':
         print(f"WARNING: {barcode} is already marked as Available in the closet.")
         return
         
-    # 2. Update the database (Instant Return)
+    new_note = input("Add a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if new_note:
+        timestamp_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        formatted_note = f"[{timestamp_date}: {new_note}]"
+        final_notes = f"{notes} | {formatted_note}" if notes and notes.strip() else formatted_note
+    else:
+        final_notes = notes
+
     cursor.execute('''
         UPDATE serialized_assets 
-        SET status = 'Available', current_ucf_id = NULL, current_name = NULL, last_updated = ? 
+        SET status = 'Available', current_ucf_id = NULL, current_name = NULL, 
+            current_position = NULL, current_email = NULL, current_duration = NULL, 
+            last_updated = ?, notes = ? 
         WHERE barcode_id = ?
-    ''', (current_time, barcode))
+    ''', (current_time, final_notes, barcode))
     
     conn.commit()
     conn.close()
     
-    print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {previous_owner_name})")
+    print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {prev_name})")
     print("Instruct the student to scan the QR code to submit the Return Survey on their way out!")
     
-    # 3. Log the event and backup
-    log_transaction("RETURN", barcode, eq_type, previous_owner, previous_owner_name)
+    log_transaction("RETURN", barcode, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
     backup_to_cloud()
 
 def main():
