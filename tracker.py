@@ -8,7 +8,7 @@ import os
 
 def log_transaction(action, barcode, equipment_type, ucf_id, student_name, position, email, duration):
     user_profile = os.environ.get('USERPROFILE')
-    log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "SARC_History_Log.csv")
+    log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_History_Log.csv")
     
     file_exists = os.path.isfile(log_path)
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -25,8 +25,8 @@ def log_transaction(action, barcode, equipment_type, ucf_id, student_name, posit
 
 def backup_to_cloud():
     user_profile = os.environ.get('USERPROFILE')
-    onedrive_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "SARC_Live_Inventory.csv")
-    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking", "inventory_backup.db")
+    onedrive_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Inventory.csv")
+    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
     
     conn = connect_db()
     cursor = conn.cursor()
@@ -83,43 +83,46 @@ def checkout_item():
         return
     
     # 1. API Magic: Check Qualtrics
-    print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
-    
-    # Unpack the variables returned by the API
-    status, student_name, position, email = verify_student(ucf_id)
     action_type = "CHECK-OUT"
     duration = "Fall 2026"
     
-    if status == "VERIFIED":
-        # Process normally
-        pass
+    while True:
+        print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
+        status, student_name, position, email = verify_student(ucf_id)
         
-    elif status == "EXPIRED":
-        print(f"Agreement found for {student_name}, but it is EXPIRED (submitted >12 hours ago).")
-        force = input("ADMIN OVERRIDE: Do you want to FORCE check-out anyway using this existing data? (Y/N): ")
-        if force.strip().upper() == 'Y':
-            print("Forcing Checkout with existing Qualtrics data...")
-            action_type = "CHECK-OUT (OVERRIDE - EXPIRED FORM)"
-        else:
-            print("Checkout aborted.")
-            return
+        if status == "VERIFIED":
+            break # Exit the loop and proceed to barcode scanning
             
-    elif status in ("NOT_FOUND", "OFFLINE"):
-        if status == "NOT_FOUND":
-            print("Agreement not found in Qualtrics.")
-        else:
-            print("System offline. Cannot verify agreement.")
+        elif status == "EXPIRED":
+            print(f"Agreement found for {student_name}, but it is EXPIRED (submitted >12 hours ago).")
+            force = input("ADMIN OVERRIDE: Do you want to FORCE check-out anyway using this existing data? (Y/N): ")
+            if force.strip().upper() == 'Y':
+                print("Forcing Checkout with existing Qualtrics data...")
+                action_type = "CHECK-OUT (OVERRIDE - EXPIRED FORM)"
+                break
+            else:
+                print("Checkout aborted.")
+                return
+                
+        elif status in ("NOT_FOUND", "OFFLINE"):
+            if status == "NOT_FOUND":
+                print("Agreement not found in Qualtrics.")
+            else:
+                print("System offline. Cannot verify agreement.")
+                
+            retry = input("Press ENTER to check again, type 'O' for OVERRIDE, or 'X' to cancel: ").strip().upper()
             
-        force = input("OVERRIDE: Do you want to FORCE check-out anyway with manual entry? (Y/N): ")
-        if force.strip().upper() == 'Y':
-            print("Forcing Checkout...")
-            student_name = input("Enter Student First and Last Name: ").strip()
-            position = input("Enter Position: ").strip()
-            email = input("Enter UCF Email: ").strip()
-            action_type = "CHECK-OUT (OVERRIDE - NO FORM)"
-        else:
-            print("Checkout aborted.")
-            return
+            if retry == 'O':
+                print("Forcing Checkout...")
+                student_name = input("Enter Student First and Last Name: ").strip()
+                position = input("Enter Position: ").strip()
+                email = input("Enter UCF Email: ").strip()
+                action_type = "CHECK-OUT (OVERRIDE - NO FORM)"
+                break
+            elif retry == 'X':
+                print("Checkout aborted.")
+                return
+            # If they just press ENTER, the loop restarts and hits the API again!
 
     # 2. Scanner Magic: Assign the item
     barcode = input("Scan Equipment Barcode: ")

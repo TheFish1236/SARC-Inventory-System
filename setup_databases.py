@@ -42,7 +42,7 @@ def setup_database():
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     print("Importing serialized_assets.csv...")
-    with open('serialized_assets.csv', 'r', encoding='utf-8') as file:
+    with open(os.path.join('source_data', 'serialized_assets.csv'), 'r', encoding='utf-8') as file:
         csv_reader = csv.DictReader(file)
         for row in csv_reader:
             cursor.execute('''
@@ -54,7 +54,7 @@ def setup_database():
             )
 
     print("Importing bulk_assets.csv...")
-    with open('bulk_assets.csv', 'r', encoding='utf-8') as file:
+    with open(os.path.join('source_data', 'bulk_assets.csv'), 'r', encoding='utf-8') as file:
         csv_reader = csv.DictReader(file)
         for row in csv_reader:
             cursor.execute('''
@@ -70,23 +70,22 @@ def setup_database():
     print("Pushing fresh database and source CSVs to OneDrive...")
     user_profile = os.environ.get('USERPROFILE')
     
-    onedrive_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Archived Tech Assistant Files", "Equipment Tracking")
-    files_to_backup = ['inventory.db', 'serialized_assets.csv', 'bulk_assets.csv']
+    onedrive_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups")
+    files_to_backup = {
+        'inventory.db': 'inventory_backup.db',
+        os.path.join('source_data', 'serialized_assets.csv'): 'serialized_assets.csv',
+        os.path.join('source_data', 'bulk_assets.csv'): 'bulk_assets.csv'
+    }
     
-    for file_name in files_to_backup:
+    for local_file, dest_name in files_to_backup.items():
         try:
-            if os.path.exists(file_name):
-                if file_name == 'inventory.db':
-                    dest_name = 'inventory_backup.db'
-                else:
-                    dest_name = file_name
-                    
-                shutil.copy2(file_name, os.path.join(onedrive_dir, dest_name))
-                print(f"  -> Synced {file_name} to cloud as {dest_name}")
+            if os.path.exists(local_file):
+                shutil.copy2(local_file, os.path.join(onedrive_dir, dest_name))
+                print(f"  -> Synced {dest_name}")
             else:
-                print(f"  -> Skipped {file_name} (File not found)")
+                print(f"  -> Skipped {local_file} (File not found locally)")
         except Exception as e:
-            print(f"Could not sync {file_name} to cloud: {e}")
+            print(f"Could not sync {local_file} to cloud: {e}")
             
     print("Cloud synced successfully!")
 
