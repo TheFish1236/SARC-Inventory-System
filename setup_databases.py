@@ -19,6 +19,8 @@ def setup_database():
             service_tag TEXT,
             status TEXT,
             notes TEXT,
+            default_kit TEXT,
+            attached_bulk_items TEXT,
             current_ucf_id TEXT,
             current_name TEXT,
             current_position TEXT,
@@ -48,9 +50,11 @@ def setup_database():
             cursor.execute('''
                 INSERT INTO serialized_assets 
                 (barcode_id, equipment_type, brand_model, service_tag, status, notes, 
-                 current_ucf_id, current_name, current_position, current_email, current_duration, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)
-            ''', (row['barcode_id'], row['equipment_type'], row['brand_model'], row['service_tag'], row['status'], row['notes'], current_time)
+                 default_kit, attached_bulk_items, current_ucf_id, current_name, 
+                 current_position, current_email, current_duration, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)
+            ''', (row['barcode_id'], row['equipment_type'], row['brand_model'], row['service_tag'], 
+                  row['status'], row['notes'], row['default_kit'], current_time)
             )
 
     print("Importing bulk_assets.csv...")
@@ -67,7 +71,7 @@ def setup_database():
     conn.commit()
     conn.close()
 
-    print("Pushing fresh database and source CSVs to OneDrive...")
+    print("\nPushing fresh database and source CSVs to OneDrive...")
     user_profile = os.environ.get('USERPROFILE')
     
     onedrive_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups")

@@ -26,28 +26,42 @@ def log_transaction(action, barcode, equipment_type, ucf_id, student_name, posit
 def backup_to_cloud():
     user_profile = os.environ.get('USERPROFILE')
     onedrive_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Inventory.csv")
+    
+    # --- NEW 3RD DATA STREAM: BULK INVENTORY ---
+    onedrive_bulk_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Bulk.csv")
+    
     onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, current_position, current_email, current_duration, last_updated, notes FROM serialized_assets")
-    rows = cursor.fetchall()
     
     try:
+        # 1. Back up the Serialized CSV
+        cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, current_position, current_email, current_duration, last_updated, notes, attached_bulk_items FROM serialized_assets")
+        rows = cursor.fetchall()
         with open(onedrive_csv, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Position', 'Email', 'Duration', 'Last Updated', 'Notes'])
+            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Position', 'Email', 'Duration', 'Last Updated', 'Notes', 'Attached Bulk Items'])
             writer.writerows(rows)
             
+        # 2. Back up the Bulk CSV
+        cursor.execute("SELECT item_name, quantity, category, notes, last_updated FROM bulk_assets")
+        bulk_rows = cursor.fetchall()
+        with open(onedrive_bulk_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Item Name', 'Quantity', 'Category', 'Notes', 'Last Updated'])
+            writer.writerows(bulk_rows)
+            
+        # 3. Back up the raw DB
         shutil.copy2('inventory.db', onedrive_db)
-        print("Live backups (CSV and DB) synced to OneDrive.")
+        print("☁️ Live backups (Serialized, Bulk, and DB) synced to OneDrive.")
         
     except PermissionError:
-        print("\nWARNING: Could not update OneDrive. Someone has the file open!")
-        print("Local database updated successfully. Cloud will catch up on the next scan.")
+        print("\n⚠️ WARNING: Could not update OneDrive. Someone has the file open!")
+        print("✅ Local database updated successfully. Cloud will catch up on the next scan.")
         
     except Exception as e:
-        print(f"\nWARNING: Cloud sync failed: {e}")
+        print(f"\n⚠️ WARNING: Cloud sync failed: {e}")
         
     finally:
         conn.close()
@@ -71,6 +85,102 @@ def parse_ucf_id(raw_input):
 def connect_db():
     return sqlite3.connect('inventory.db')
 
+def handle_bulk_inventory():
+    print("\n--- BULK INVENTORY MENU ---")
+    print("1. Check-Out Bulk Item")
+    print("2. Return Bulk Item")
+    print("3. Cancel")
+    
+    action_choice = input("Select action (1-3): ").strip()
+    if action_choice == '3':
+        return
+        
+    is_checkout = (action_choice == '1')
+    action_str = "CHECK-OUT (BULK)" if is_checkout else "RETURN (BULK)"
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT DISTINCT category FROM bulk_assets ORDER BY category")
+    categories = [row[0] for row in cursor.fetchall()]
+
+    if not categories:
+        print("No bulk categories found in database.")
+        conn.close()
+        return
+
+    print("\nCategories:")
+    for i, cat in enumerate(categories, 1):
+        print(f"{i}. {cat}")
+        
+    try:
+        cat_idx = int(input("\nSelect category number: ")) - 1
+        selected_category = categories[cat_idx]
+    except (ValueError, IndexError):
+        print("Invalid selection.")
+        conn.close()
+        return
+
+    cursor.execute("SELECT item_name, quantity FROM bulk_assets WHERE category = ? ORDER BY item_name", (selected_category,))
+    items = cursor.fetchall()
+
+    print(f"\nItems in {selected_category}:")
+    for i, (name, qty) in enumerate(items, 1):
+        print(f"{i}. {name} ({qty} currently in stock)")
+        
+    try:
+        item_idx = int(input("\nSelect item number: ")) - 1
+        selected_item, current_qty = items[item_idx]
+    except (ValueError, IndexError):
+        print("Invalid selection.")
+        conn.close()
+        return
+
+    try:
+        qty_change = int(input(f"How many '{selected_item}'? (Default 1): ") or 1)
+    except ValueError:
+        print("Invalid quantity.")
+        conn.close()
+        return
+
+    if is_checkout and qty_change > current_qty:
+        print(f"WARNING: You only have {current_qty} in stock. Cannot check out {qty_change}.")
+        conn.close()
+        return
+
+    print("\nWho is taking/returning this?")
+    raw_swipe = input("Swipe Card (or type 7-digit UCF ID, or press ENTER for Staff): ").strip()
+    
+    ucf_id = "Staff"
+    student_name = "Internal/Ad-Hoc"
+    position = "Staff"
+    email = "Staff"
+    duration = "N/A"
+    
+    if raw_swipe:
+        parsed_id = parse_ucf_id(raw_swipe)
+        if parsed_id:
+            ucf_id = parsed_id
+            status, fetched_name, pos, em = verify_student(ucf_id)
+            if fetched_name != "Unknown" and fetched_name is not None:
+                student_name = fetched_name
+                position = pos
+                email = em
+                duration = "Fall 2026"
+            else:
+                student_name = input("Enter name for log: ").strip()
+
+    new_qty = (current_qty - qty_change) if is_checkout else (current_qty + qty_change)
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    cursor.execute("UPDATE bulk_assets SET quantity = ?, last_updated = ? WHERE item_name = ?", (new_qty, current_time, selected_item))
+    conn.commit()
+    conn.close()
+
+    print(f"\nSUCCESS: {action_str} {qty_change}x {selected_item}. New stock: {new_qty}")
+    log_transaction(action_str, "N/A", selected_item, ucf_id, student_name, position, email, duration)
+    backup_to_cloud()
+
 def checkout_item():
     raw_swipe = input("\nSwipe Card (or type 7-digit UCF ID): ")
 
@@ -82,16 +192,19 @@ def checkout_item():
     if ucf_id is None:
         return
     
-    # 1. API Magic: Check Qualtrics
-    action_type = "CHECK-OUT"
+    is_verified = False
+    student_name = "Unknown"
+    position = "Unknown"
+    email = "Unknown"
     duration = "Fall 2026"
+    action_type = "CHECK-OUT"
     
-    while True:
+    while not is_verified:
         print(f"Verifying UCFID: {ucf_id} with Qualtrics...")
         status, student_name, position, email = verify_student(ucf_id)
         
         if status == "VERIFIED":
-            break # Exit the loop and proceed to barcode scanning
+            break
             
         elif status == "EXPIRED":
             print(f"Agreement found for {student_name}, but it is EXPIRED (submitted >12 hours ago).")
@@ -122,24 +235,24 @@ def checkout_item():
             elif retry == 'X':
                 print("Checkout aborted.")
                 return
-            # If they just press ENTER, the loop restarts and hits the API again!
 
-    # 2. Scanner Magic: Assign the item
     barcode = input("Scan Equipment Barcode: ")
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT status, equipment_type, brand_model, notes FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    cursor.execute("SELECT status, equipment_type, brand_model, notes, default_kit FROM serialized_assets WHERE barcode_id = ?", (barcode,))
     result = cursor.fetchone()
     
     if result is None:
         print(f"ERROR: Barcode '{barcode}' not found in database.")
+        conn.close()
         return
         
-    current_status, eq_type, model, notes = result
+    current_status, eq_type, model, notes, default_kit = result
     
     if current_status != 'Available':
         print(f"WARNING: {barcode} cannot be checked out. Current status: {current_status}")
+        conn.close()
         return
         
     if notes and notes.strip():
@@ -147,9 +260,29 @@ def checkout_item():
         confirm = input("Are you sure you want to proceed with this checkout? (Y/N): ")
         if confirm.strip().upper() != 'Y':
             print("Checkout aborted by user.")
+            conn.close()
             return
 
-    new_note = input("Add a note to this item? (Press ENTER to skip): ").strip()
+    assigned_bulk = []
+    if default_kit and default_kit.strip():
+        kit_items = [item.strip() for item in default_kit.split('|')]
+        print("\n📦 Associated Bundle Components Found:")
+        
+        for item in kit_items:
+            cursor.execute("SELECT quantity FROM bulk_assets WHERE item_name = ?", (item,))
+            bulk_result = cursor.fetchone()
+            
+            if bulk_result:
+                in_stock = bulk_result[0]
+                if in_stock > 0:
+                    choice = input(f"   Include {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
+                    if choice != 'N':
+                        cursor.execute("UPDATE bulk_assets SET quantity = quantity - 1 WHERE item_name = ?", (item,))
+                        assigned_bulk.append(item)
+                else:
+                    print(f"   ⚠️ WARNING: {item} is out of stock in bulk inventory!")
+
+    new_note = input("\nAdd a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     if new_note:
@@ -159,19 +292,28 @@ def checkout_item():
     else:
         final_notes = notes
 
+    attached_string = " | ".join(assigned_bulk) if assigned_bulk else None
+
     cursor.execute('''
         UPDATE serialized_assets 
         SET status = 'Checked Out', current_ucf_id = ?, current_name = ?, 
             current_position = ?, current_email = ?, current_duration = ?, 
-            last_updated = ?, notes = ? 
+            last_updated = ?, notes = ?, attached_bulk_items = ? 
         WHERE barcode_id = ?
-    ''', (ucf_id, student_name, position, email, duration, current_time, final_notes, barcode))
+    ''', (ucf_id, student_name, position, email, duration, current_time, final_notes, attached_string, barcode))
     
     conn.commit()
     conn.close()
     
     print(f"SUCCESS: {eq_type} ({model}) checked out to {student_name} ({ucf_id}).")
     log_transaction(action_type, barcode, eq_type, ucf_id, student_name, position, email, duration)
+    
+    # --- NEW: Explicitly log each bundled item individually ---
+    if assigned_bulk:
+        print(f"   Attached Accessories: {', '.join(assigned_bulk)}")
+        for item in assigned_bulk:
+            log_transaction("CHECK-OUT (BUNDLE)", "N/A", item, ucf_id, student_name, position, email, duration)
+            
     backup_to_cloud()
 
 
@@ -180,20 +322,44 @@ def return_item():
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT status, equipment_type, current_ucf_id, current_name, current_position, current_email, current_duration, notes FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    cursor.execute('''
+        SELECT status, equipment_type, current_ucf_id, current_name, 
+               current_position, current_email, current_duration, notes, attached_bulk_items 
+        FROM serialized_assets 
+        WHERE barcode_id = ?
+    ''', (barcode,))
     result = cursor.fetchone()
     
     if result is None:
         print(f"ERROR: Barcode '{barcode}' not found in database.")
+        conn.close()
         return
         
-    current_status, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur, notes = result
+    current_status, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur, notes, attached_bulk_items = result
     
     if current_status == 'Available':
         print(f"WARNING: {barcode} is already marked as Available in the closet.")
+        conn.close()
         return
         
-    new_note = input("Add a note to this item? (Press ENTER to skip): ").strip()
+    # Variables to track what was returned/lost for logging
+    returned_items_to_log = []
+    lost_items_to_log = []
+
+    if attached_bulk_items and attached_bulk_items.strip():
+        returned_items = [item.strip() for item in attached_bulk_items.split('|')]
+        print("\nVERIFY RETURN OF BUNDLED ACCESSORIES:")
+        
+        for item in returned_items:
+            choice = input(f"   Did they return the {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
+            if choice != 'N':
+                cursor.execute("UPDATE bulk_assets SET quantity = quantity + 1 WHERE item_name = ?", (item,))
+                returned_items_to_log.append(item)
+            else:
+                print(f"   EXCEPTION: {item} was NOT returned. Leaving unreplenished in bulk system.")
+                lost_items_to_log.append(item)
+
+    new_note = input("\nAdd a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     if new_note:
@@ -207,7 +373,7 @@ def return_item():
         UPDATE serialized_assets 
         SET status = 'Available', current_ucf_id = NULL, current_name = NULL, 
             current_position = NULL, current_email = NULL, current_duration = NULL, 
-            last_updated = ?, notes = ? 
+            last_updated = ?, notes = ?, attached_bulk_items = NULL 
         WHERE barcode_id = ?
     ''', (current_time, final_notes, barcode))
     
@@ -217,7 +383,17 @@ def return_item():
     print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {prev_name})")
     print("Instruct the student to scan the QR code to submit the Return Survey on their way out!")
     
+    # Log the main serialized item
     log_transaction("RETURN", barcode, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
+    
+    # --- NEW: Explicitly log each bundled item return/loss ---
+    for item in returned_items_to_log:
+        log_transaction("RETURN (BUNDLE)", "N/A", item, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
+        
+    for item in lost_items_to_log:
+        # We log "LOST (BUNDLE)" so the boss knows they still owe it!
+        log_transaction("LOST (BUNDLE)", "N/A", item, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
+
     backup_to_cloud()
 
 def main():
@@ -227,19 +403,22 @@ def main():
         print("\nMain Menu:")
         print("1. Check-Out Equipment")
         print("2. Return Equipment")
-        print("3. Exit")
+        print("3. Bulk Inventory Menu")
+        print("4. Exit")
         
-        choice = input("\nSelect an option (1-3): ")
+        choice = input("\nSelect an option (1-4): ")
         
         if choice == '1':
             checkout_item()
         elif choice == '2':
             return_item()
         elif choice == '3':
+            handle_bulk_inventory()
+        elif choice == '4':
             print("Shutting down tracker. Goodbye!")
             break
         else:
-            print("Invalid choice. Please type 1, 2, or 3.")
+            print("Invalid choice. Please type 1, 2, 3, or 4.")
 
 if __name__ == "__main__":
     main()
