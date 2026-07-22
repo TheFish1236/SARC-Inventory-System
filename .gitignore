@@ -5,8 +5,3 @@
 __pycache__/
 source_data/
 *.pyc
-
-#temporary, flask isn't ready
-app.py
-templates
-static
