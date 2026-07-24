@@ -90,13 +90,23 @@ def add_new_asset():
     finally:
         conn.close()
 
-    # Append to local source CSV so baseline stays updated
+    # Append to local source CSV safely
     source_csv_path = os.path.join('source_data', 'serialized_assets.csv')
     try:
+        # Check if the file ends with a newline
+        needs_newline = False
+        if os.path.exists(source_csv_path):
+            with open(source_csv_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if content and not content.endswith('\n'):
+                    needs_newline = True
+
         with open(source_csv_path, 'a', newline='', encoding='utf-8') as f:
+            if needs_newline:
+                f.write('\n')
             writer = csv.writer(f)
             writer.writerow([barcode_id, equipment_type, brand_model, service_tag, 'Available', notes, default_kit, ''])
-        print(f"Appended {barcode_id} to source_data/serialized_assets.csv")
+        print(f"Appended {barcode_id} cleanly to source_data/serialized_assets.csv")
     except Exception as e:
         print(f"Warning: Could not update source CSV: {e}")
 

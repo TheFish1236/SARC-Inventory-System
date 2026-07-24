@@ -54,14 +54,14 @@ def backup_to_cloud():
             
         # 3. Back up the raw DB
         shutil.copy2('inventory.db', onedrive_db)
-        print("☁️ Live backups (Serialized, Bulk, and DB) synced to OneDrive.")
+        print("Live backups (Serialized, Bulk, and DB) synced to OneDrive.")
         
     except PermissionError:
-        print("\n⚠️ WARNING: Could not update OneDrive. Someone has the file open!")
-        print("✅ Local database updated successfully. Cloud will catch up on the next scan.")
+        print("\nWARNING: Could not update OneDrive. Someone has the file open!")
+        print("Local database updated successfully. Cloud will catch up on the next scan.")
         
     except Exception as e:
-        print(f"\n⚠️ WARNING: Cloud sync failed: {e}")
+        print(f"\nWARNING: Cloud sync failed: {e}")
         
     finally:
         conn.close()
@@ -264,11 +264,12 @@ def checkout_item():
             return
 
     assigned_bulk = []
-    if default_kit and default_kit.strip():
+    if default_kit is not None and default_kit.strip():
         kit_items = [item.strip() for item in default_kit.split('|')]
-        print("\n📦 Associated Bundle Components Found:")
+        print("\nAssociated Bundle Components Found:")
         
         for item in kit_items:
+            # Check if we actually have any in stock
             cursor.execute("SELECT quantity FROM bulk_assets WHERE item_name = ?", (item,))
             bulk_result = cursor.fetchone()
             
@@ -277,10 +278,14 @@ def checkout_item():
                 if in_stock > 0:
                     choice = input(f"   Include {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
                     if choice != 'N':
+                        # Decrement bulk inventory
                         cursor.execute("UPDATE bulk_assets SET quantity = quantity - 1 WHERE item_name = ?", (item,))
                         assigned_bulk.append(item)
                 else:
-                    print(f"   ⚠️ WARNING: {item} is out of stock in bulk inventory!")
+                    print(f"   WARNING: {item} is out of stock in bulk inventory!")
+            else:
+                # NEW: Explicit warning if the item name in default_kit doesn't match bulk_assets.csv
+                print(f"   DATABASE ERROR: Bundle item '{item}' not found in bulk inventory. Check for typos.")
 
     new_note = input("\nAdd a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
