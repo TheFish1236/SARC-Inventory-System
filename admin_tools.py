@@ -22,7 +22,6 @@ def log_admin_action(action, barcode, details):
             if not file_exists:
                 writer.writerow(['Timestamp', 'Operator', 'Action', 'Target Barcode', 'Details'])
             writer.writerow([current_time, operator, action, barcode, details])
-            print("Logged administrative action to OneDrive.")
     except PermissionError:
         print("Warning: Admin Log is open in Excel, could not append transaction.")
     except Exception as e:
@@ -90,10 +89,8 @@ def add_new_asset():
     finally:
         conn.close()
 
-    # Append to local source CSV safely
     source_csv_path = os.path.join('source_data', 'serialized_assets.csv')
     try:
-        # Check if the file ends with a newline
         needs_newline = False
         if os.path.exists(source_csv_path):
             with open(source_csv_path, 'r', encoding='utf-8') as f:
@@ -106,11 +103,63 @@ def add_new_asset():
                 f.write('\n')
             writer = csv.writer(f)
             writer.writerow([barcode_id, equipment_type, brand_model, service_tag, 'Available', notes, default_kit, ''])
-        print(f"Appended {barcode_id} cleanly to source_data/serialized_assets.csv")
+        print(f"Appended {barcode_id} to source_data/serialized_assets.csv")
     except Exception as e:
         print(f"Warning: Could not update source CSV: {e}")
 
     log_admin_action("INGEST_ASSET", barcode_id, f"Added {brand_model} | SN: {service_tag} | Kit: {default_kit}")
+    backup_to_cloud()
+
+def add_new_bulk_asset():
+    print("\n--- INGEST NEW BULK ASSET ---")
+    item_name = input("Enter Item Name (e.g., HDMI to USB Adapter): ").strip()
+    try:
+        quantity = int(input("Enter Quantity: "))
+    except ValueError:
+        print("Invalid quantity. Must be a number.")
+        return
+        
+    category = input("Enter Category (e.g., Adapters, Cables, Peripherals): ").strip()
+    notes = input("Enter Notes (e.g., Location: Front Desk) (or press ENTER to skip): ").strip()
+
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('''
+            INSERT INTO bulk_assets (item_name, quantity, category, notes, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (item_name, quantity, category, notes, current_time))
+        conn.commit()
+        print(f"SUCCESS: Added {quantity}x {item_name} to live database.")
+    except sqlite3.IntegrityError:
+        print(f"ERROR: {item_name} already exists. Use the Tracker Bulk Menu to add stock.")
+        conn.close()
+        return
+    finally:
+        conn.close()
+
+    source_csv_path = os.path.join('source_data', 'bulk_assets.csv')
+    try:
+        needs_newline = False
+        if os.path.exists(source_csv_path):
+            with open(source_csv_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if content and not content.endswith('\n'):
+                    needs_newline = True
+
+        with open(source_csv_path, 'a', newline='', encoding='utf-8') as f:
+            if needs_newline:
+                f.write('\n')
+            writer = csv.writer(f)
+            writer.writerow([item_name, quantity, category, notes])
+        print(f"Appended {item_name} to source_data/bulk_assets.csv")
+    except Exception as e:
+        print(f"Warning: Could not update source CSV: {e}")
+
+    log_admin_action("INGEST_BULK", "N/A", f"Added {quantity}x {item_name} in {category}")
     backup_to_cloud()
 
 def delete_or_surplus_asset():
@@ -201,20 +250,23 @@ def swap_or_update_tags():
 def main():
     while True:
         print("\n=== SARC DATABASE ADMIN CONTROL PANEL ===")
-        print("1. Ingest New Asset (Add)")
-        print("2. Surplus or Delete Asset")
-        print("3. Update Service Tag or Default Kit")
-        print("4. Exit")
+        print("1. Ingest New Serialized Asset")
+        print("2. Ingest New Bulk Asset")
+        print("3. Surplus or Delete Asset")
+        print("4. Update Service Tag or Default Kit")
+        print("5. Exit")
         
-        choice = input("\nSelect option (1-4): ").strip()
+        choice = input("\nSelect option (1-5): ").strip()
         
         if choice == '1':
             add_new_asset()
         elif choice == '2':
-            delete_or_surplus_asset()
+            add_new_bulk_asset()
         elif choice == '3':
-            swap_or_update_tags()
+            delete_or_surplus_asset()
         elif choice == '4':
+            swap_or_update_tags()
+        elif choice == '5':
             print("Exiting Admin Control Panel.")
             break
         else:
