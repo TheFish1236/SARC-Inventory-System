@@ -3,7 +3,7 @@
 ## Overview
 The SARC Equipment Inventory System is a lightweight, on-premises asset management application designed for the UCF Student Academic Resource Center (SARC). It replaces a manual, spreadsheet-based system with a relational database and automates the checkout and return workflows of departmental technology (laptops, iPads, and accessories). 
 
-The system operates entirely within the university network boundary, integrating USB hardware wedges (magnetic stripe card readers and barcode scanners) with local database storage and asynchronous cloud API validation to maintain complete FERPA compliance and an immutable audit trail.
+The system operates entirely within the university network boundary, integrating USB hardware wedges (magnetic stripe card readers and barcode scanners) with local database storage and asynchronous cloud API validation to maintain FERPA compliance and an audit trail.
 
 ---
 
