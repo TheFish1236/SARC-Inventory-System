@@ -410,8 +410,9 @@ def main():
         print("2. Return Equipment")
         print("3. Bulk Inventory Menu")
         print("4. Exit")
+        print("5. Backup & Exit")
         
-        choice = input("\nSelect an option (1-4): ")
+        choice = input("\nSelect an option (1-5): ")
         
         if choice == '1':
             checkout_item()
@@ -422,8 +423,12 @@ def main():
         elif choice == '4':
             print("Shutting down tracker. Goodbye!")
             break
+        elif choice == '5':
+            backup_to_cloud()
+            print("Shutting down tracker. Goodbye!")
+            break
         else:
-            print("Invalid choice. Please type 1, 2, 3, or 4.")
+            print("Invalid choice. Please type 1, 2, 3, 4, or 5.")
 
 if __name__ == "__main__":
     main()
