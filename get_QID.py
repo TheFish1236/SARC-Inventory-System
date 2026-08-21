@@ -12,9 +12,11 @@ request_id = os.getenv("SURVEY_REQUEST")
 checkout_id = os.getenv("SURVEY_CHECKOUT")
 return_id = os.getenv("SURVEY_RETURN")
 
-survey = input("pick survey: (return_id/checkout_id/request_id): ")
+options = [request_id, checkout_id, return_id]
 
-url = f"https://{data_center}/API/v3/survey-definitions/{survey}"
+survey = input("pick survey: (return_id/checkout_id/request_id as 1/2/3): ")
+
+url = f"https://{data_center}/API/v3/survey-definitions/{options[int(survey)-1]}"
 headers = {"x-api-token": api_key}
 
 def clean_text(html_text):

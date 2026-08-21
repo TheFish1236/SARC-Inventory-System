@@ -91,8 +91,21 @@ def verify_student(target_ucf_id):
         first_name = best_match_values.get('QID1_1', 'Unknown')
         last_name = best_match_values.get('QID1_2', 'Unknown')
         full_name = f"{first_name} {last_name}".strip()
-        position = best_match_values.get('QID1_4', 'Unknown')
         email = best_match_values.get('QID1_5', 'Unknown')
+
+        raw_position = str(values.get('QID26', 'Unknown'))
+        position_text = values.get('QID26_5_TEXT', '').strip()
+        if position_text:
+            position = position_text
+        elif raw_position == '2':
+            position = 'Tutor'
+        elif raw_position == '3':
+            position = 'SI Leader'
+        elif raw_position == '5':
+            position = 'Other'
+        else:
+            position = raw_position
+        
         
         if is_fresh:
             print(f"SUCCESS: {full_name} ({position}) agreement verified.")

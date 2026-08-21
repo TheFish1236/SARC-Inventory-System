@@ -2,67 +2,67 @@ import sqlite3
 import datetime
 from qualtrics_api import verify_student
 import re
-import csv
 import shutil
 import os
-
-def log_transaction(action, barcode, equipment_type, ucf_id, student_name, position, email, duration):
-    user_profile = os.environ.get('USERPROFILE')
-    log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_History_Log.csv")
-    
-    file_exists = os.path.isfile(log_path)
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    try:
-        with open(log_path, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(['Timestamp', 'Action', 'Barcode ID', 'Equipment Type', 'UCF ID', 'Name', 'Position', 'Email', 'Duration'])
-            writer.writerow([current_time, action, barcode, equipment_type, ucf_id, student_name, position, email, duration])
-
-    except PermissionError:
-        print("Warning: History Log is open in Excel, could not append transaction.")
+import csv
 
 def backup_to_cloud():
     user_profile = os.environ.get('USERPROFILE')
-    onedrive_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Inventory.csv")
+    base_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - SARC", "Technology Assistant", "Equipment Tracking")
     
-    # --- NEW 3RD DATA STREAM: BULK INVENTORY ---
-    onedrive_bulk_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Bulk.csv")
+    # Our 3 "API Endpoints" for Power BI / Excel
+    onedrive_live = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Inventory.csv")
+    onedrive_bulk = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Bulk.csv")
+    onedrive_history = os.path.join(base_dir, "Live_Data_Feeds", "SARC_History_Log.csv")
     
-    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
+    onedrive_db = os.path.join(base_dir, "System_Backups", "inventory_backup.db")
     
     conn = connect_db()
     cursor = conn.cursor()
     
     try:
-        # 1. Back up the Serialized CSV
-        cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, current_position, current_email, current_duration, last_updated, notes, attached_bulk_items FROM serialized_assets")
-        rows = cursor.fetchall()
-        with open(onedrive_csv, 'w', newline='', encoding='utf-8') as f:
+        # 1. Export Live Serialized View
+        cursor.execute("SELECT * FROM vw_dashboard_live")
+        with open(onedrive_live, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Position', 'Email', 'Duration', 'Last Updated', 'Notes', 'Attached Bulk Items'])
-            writer.writerows(rows)
+            writer.writerow([d[0] for d in cursor.description])
+            writer.writerows(cursor.fetchall())
             
-        # 2. Back up the Bulk CSV
+        # 2. Export Live Bulk Table
         cursor.execute("SELECT item_name, quantity, category, notes, last_updated FROM bulk_assets")
-        bulk_rows = cursor.fetchall()
-        with open(onedrive_bulk_csv, 'w', newline='', encoding='utf-8') as f:
+        with open(onedrive_bulk, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Item Name', 'Quantity', 'Category', 'Notes', 'Last Updated'])
-            writer.writerows(bulk_rows)
+            writer.writerow([d[0] for d in cursor.description])
+            writer.writerows(cursor.fetchall())
             
-        # 3. Back up the raw DB
+        # 3. Export History Ledger (Now with NAMES!)
+        cursor.execute('''
+            SELECT l.time_out AS Timestamp, 'CHECK-OUT' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.duration AS Details
+            FROM loans l
+            LEFT JOIN users u ON l.ucf_id = u.ucf_id
+            WHERE l.time_out IS NOT NULL
+            UNION ALL
+            SELECT l.time_in AS Timestamp, 'RETURN' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.attached_bulk AS Details
+            FROM loans l
+            LEFT JOIN users u ON l.ucf_id = u.ucf_id
+            WHERE l.time_in IS NOT NULL
+            UNION ALL
+            SELECT timestamp AS Timestamp, action_type AS Action, item_name AS Target, ucf_id AS UCF_ID, student_name AS Name, CAST(qty_change AS TEXT) AS Details
+            FROM bulk_transactions
+            ORDER BY Timestamp DESC
+        ''')
+        with open(onedrive_history, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # Added 'Name' to the headers
+            writer.writerow(['Timestamp', 'Action', 'Target', 'UCF_ID', 'Name', 'Details'])
+            writer.writerows(cursor.fetchall())
+            
+        # 4. Backup the raw DB for Disaster Recovery
         shutil.copy2('inventory.db', onedrive_db)
-        print("Live backups (Serialized, Bulk, and DB) synced to OneDrive.")
-        
-    except PermissionError:
-        print("\nWARNING: Could not update OneDrive. Someone has the file open!")
-        print("Local database updated successfully. Cloud will catch up on the next scan.")
+        print("Data Pipeline Synced: Views and DB backed up to OneDrive.")
         
     except Exception as e:
         print(f"\nWARNING: Cloud sync failed: {e}")
-        
     finally:
         conn.close()
 
@@ -75,8 +75,7 @@ def parse_ucf_id(raw_input):
         if len(parts) >= 3:
             match = re.search(r'^\d+', parts[2])
             if match:
-                long_num = match.group(0)
-                return long_num[-7:]
+                return match.group(0)[-7:]
     if '^' not in raw_input:
         print("Bad swipe! Please try again.")
         return None
@@ -153,32 +152,34 @@ def handle_bulk_inventory():
     
     ucf_id = "Staff"
     student_name = "Internal/Ad-Hoc"
-    position = "Staff"
-    email = "Staff"
-    duration = "N/A"
     
     if raw_swipe:
         parsed_id = parse_ucf_id(raw_swipe)
         if parsed_id:
             ucf_id = parsed_id
             status, fetched_name, pos, em = verify_student(ucf_id)
-            if fetched_name != "Unknown" and fetched_name is not None:
+            if fetched_name and fetched_name != "Unknown":
                 student_name = fetched_name
-                position = pos
-                email = em
-                duration = "Fall 2026"
             else:
                 student_name = input("Enter name for log: ").strip()
 
-    new_qty = (current_qty - qty_change) if is_checkout else (current_qty + qty_change)
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_qty = (current_qty - qty_change) if is_checkout else (current_qty + qty_change)
+    signed_qty_change = -qty_change if is_checkout else qty_change
     
+    # Update bulk stock
     cursor.execute("UPDATE bulk_assets SET quantity = ?, last_updated = ? WHERE item_name = ?", (new_qty, current_time, selected_item))
+    
+    # Native SQL Logging for bulk actions
+    cursor.execute('''
+        INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) 
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (selected_item, signed_qty_change, action_str, ucf_id, student_name, current_time))
+    
     conn.commit()
     conn.close()
 
     print(f"\nSUCCESS: {action_str} {qty_change}x {selected_item}. New stock: {new_qty}")
-    log_transaction(action_str, "N/A", selected_item, ucf_id, student_name, position, email, duration)
     backup_to_cloud()
 
 def checkout_item():
@@ -205,7 +206,6 @@ def checkout_item():
         
         if status == "VERIFIED":
             break
-            
         elif status == "EXPIRED":
             print(f"Agreement found for {student_name}, but it is EXPIRED (submitted >12 hours ago).")
             force = input("ADMIN OVERRIDE: Do you want to FORCE check-out anyway using this existing data? (Y/N): ")
@@ -216,15 +216,13 @@ def checkout_item():
             else:
                 print("Checkout aborted.")
                 return
-                
         elif status in ("NOT_FOUND", "OFFLINE"):
             if status == "NOT_FOUND":
                 print("Agreement not found in Qualtrics.")
             else:
                 print("System offline. Cannot verify agreement.")
-                
-            retry = input("Press ENTER to check again, type 'O' for OVERRIDE, or 'X' to cancel: ").strip().upper()
             
+            retry = input("Press ENTER to check again, type 'O' for OVERRIDE, or 'X' to cancel: ").strip().upper()
             if retry == 'O':
                 print("Forcing Checkout...")
                 student_name = input("Enter Student First and Last Name: ").strip()
@@ -240,7 +238,9 @@ def checkout_item():
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT status, equipment_type, brand_model, notes, default_kit FROM serialized_assets WHERE barcode_id = ?", (barcode,))
+    
+    # Query 'equipment' table instead of 'serialized_assets'
+    cursor.execute("SELECT status, equipment_type, brand_model, notes, default_kit FROM equipment WHERE barcode_id = ?", (barcode,))
     result = cursor.fetchone()
     
     if result is None:
@@ -264,74 +264,68 @@ def checkout_item():
             return
 
     assigned_bulk = []
-    if default_kit is not None and default_kit.strip():
+    if default_kit and default_kit.strip():
         kit_items = [item.strip() for item in default_kit.split('|')]
         print("\nAssociated Bundle Components Found:")
         
         for item in kit_items:
-            # Check if we actually have any in stock
             cursor.execute("SELECT quantity FROM bulk_assets WHERE item_name = ?", (item,))
             bulk_result = cursor.fetchone()
-            
-            if bulk_result:
-                in_stock = bulk_result[0]
-                if in_stock > 0:
-                    choice = input(f"   Include {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
-                    if choice != 'N':
-                        # Decrement bulk inventory
-                        cursor.execute("UPDATE bulk_assets SET quantity = quantity - 1 WHERE item_name = ?", (item,))
-                        assigned_bulk.append(item)
-                else:
-                    print(f"   WARNING: {item} is out of stock in bulk inventory!")
+            if bulk_result and bulk_result[0] > 0:
+                choice = input(f"   Include {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
+                if choice != 'N':
+                    cursor.execute("UPDATE bulk_assets SET quantity = quantity - 1 WHERE item_name = ?", (item,))
+                    
+                    # Log bulk component native transaction
+                    cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, -1, ?, ?, ?, CURRENT_TIMESTAMP)", (item, "CHECK-OUT (BUNDLE)", ucf_id, student_name))
+                    assigned_bulk.append(item)
             else:
-                # NEW: Explicit warning if the item name in default_kit doesn't match bulk_assets.csv
-                print(f"   DATABASE ERROR: Bundle item '{item}' not found in bulk inventory. Check for typos.")
+                print(f"   WARNING: {item} is out of stock in bulk inventory!")
 
     new_note = input("\nAdd a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    if new_note:
-        timestamp_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        formatted_note = f"[{timestamp_date}: {new_note}]"
-        final_notes = f"{notes} | {formatted_note}" if notes and notes.strip() else formatted_note
-    else:
-        final_notes = notes
-
+    final_notes = f"{notes} | [{datetime.datetime.now().strftime('%Y-%m-%d')}: {new_note}]" if new_note and notes and notes.strip() else (f"[{datetime.datetime.now().strftime('%Y-%m-%d')}: {new_note}]" if new_note else notes)
     attached_string = " | ".join(assigned_bulk) if assigned_bulk else None
 
+    # Step 1: Manage User (Upsert)
     cursor.execute('''
-        UPDATE serialized_assets 
-        SET status = 'Checked Out', current_ucf_id = ?, current_name = ?, 
-            current_position = ?, current_email = ?, current_duration = ?, 
-            last_updated = ?, notes = ?, attached_bulk_items = ? 
-        WHERE barcode_id = ?
-    ''', (ucf_id, student_name, position, email, duration, current_time, final_notes, attached_string, barcode))
+        INSERT INTO users (ucf_id, name, position, email, last_updated)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(ucf_id) DO UPDATE SET 
+        name=excluded.name, position=excluded.position, email=excluded.email, last_updated=excluded.last_updated
+    ''', (ucf_id, student_name, position, email, current_time))
+    
+    # Step 2: Establish Active Loan (time_in is NULL, meaning it is checked out)
+    cursor.execute('''
+        INSERT INTO loans (barcode_id, ucf_id, time_out, duration, attached_bulk, action_out)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (barcode, ucf_id, current_time, duration, attached_string, action_type))
+    
+    # Step 3: Modify Asset Base Data
+    cursor.execute("UPDATE equipment SET status = 'Checked Out', last_updated = ?, notes = ? WHERE barcode_id = ?", (current_time, final_notes, barcode))
     
     conn.commit()
     conn.close()
     
     print(f"SUCCESS: {eq_type} ({model}) checked out to {student_name} ({ucf_id}).")
-    log_transaction(action_type, barcode, eq_type, ucf_id, student_name, position, email, duration)
-    
-    # --- NEW: Explicitly log each bundled item individually ---
     if assigned_bulk:
         print(f"   Attached Accessories: {', '.join(assigned_bulk)}")
-        for item in assigned_bulk:
-            log_transaction("CHECK-OUT (BUNDLE)", "N/A", item, ucf_id, student_name, position, email, duration)
-            
+        
     backup_to_cloud()
-
 
 def return_item():
     barcode = input("\nScan Equipment Barcode to Return: ")
     
     conn = connect_db()
     cursor = conn.cursor()
+    
+    # 3NF Multi-table JOIN to find the specific active loan for this item
     cursor.execute('''
-        SELECT status, equipment_type, current_ucf_id, current_name, 
-               current_position, current_email, current_duration, notes, attached_bulk_items 
-        FROM serialized_assets 
-        WHERE barcode_id = ?
+        SELECT e.status, e.equipment_type, l.transaction_id, l.ucf_id, u.name, e.notes, l.attached_bulk
+        FROM equipment e
+        LEFT JOIN loans l ON e.barcode_id = l.barcode_id AND l.time_in IS NULL
+        LEFT JOIN users u ON l.ucf_id = u.ucf_id
+        WHERE e.barcode_id = ?
     ''', (barcode,))
     result = cursor.fetchone()
     
@@ -340,47 +334,32 @@ def return_item():
         conn.close()
         return
         
-    current_status, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur, notes, attached_bulk_items = result
+    current_status, eq_type, loan_id, prev_ucf, prev_name, notes, attached_bulk_items = result
     
-    if current_status == 'Available':
+    if current_status == 'Available' or loan_id is None:
         print(f"WARNING: {barcode} is already marked as Available in the closet.")
         conn.close()
         return
-        
-    # Variables to track what was returned/lost for logging
-    returned_items_to_log = []
-    lost_items_to_log = []
 
     if attached_bulk_items and attached_bulk_items.strip():
         returned_items = [item.strip() for item in attached_bulk_items.split('|')]
         print("\nVERIFY RETURN OF BUNDLED ACCESSORIES:")
-        
         for item in returned_items:
             choice = input(f"   Did they return the {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
             if choice != 'N':
                 cursor.execute("UPDATE bulk_assets SET quantity = quantity + 1 WHERE item_name = ?", (item,))
-                returned_items_to_log.append(item)
+                cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, 1, 'RETURN (BUNDLE)', ?, ?, CURRENT_TIMESTAMP)", (item, prev_ucf, prev_name))
             else:
                 print(f"   EXCEPTION: {item} was NOT returned. Leaving unreplenished in bulk system.")
-                lost_items_to_log.append(item)
+                cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, 0, 'LOST (BUNDLE)', ?, ?, CURRENT_TIMESTAMP)", (item, prev_ucf, prev_name))
 
     new_note = input("\nAdd a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    if new_note:
-        timestamp_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        formatted_note = f"[{timestamp_date}: {new_note}]"
-        final_notes = f"{notes} | {formatted_note}" if notes and notes.strip() else formatted_note
-    else:
-        final_notes = notes
+    final_notes = f"{notes} | [{datetime.datetime.now().strftime('%Y-%m-%d')}: {new_note}]" if new_note and notes and notes.strip() else (f"[{datetime.datetime.now().strftime('%Y-%m-%d')}: {new_note}]" if new_note else notes)
 
-    cursor.execute('''
-        UPDATE serialized_assets 
-        SET status = 'Available', current_ucf_id = NULL, current_name = NULL, 
-            current_position = NULL, current_email = NULL, current_duration = NULL, 
-            last_updated = ?, notes = ?, attached_bulk_items = NULL 
-        WHERE barcode_id = ?
-    ''', (current_time, final_notes, barcode))
+    # Free Asset & Close the Loan Record (time_in is stamped)
+    cursor.execute("UPDATE equipment SET status = 'Available', last_updated = ?, notes = ? WHERE barcode_id = ?", (current_time, final_notes, barcode))
+    cursor.execute("UPDATE loans SET time_in = ?, action_in = 'RETURN' WHERE transaction_id = ?", (current_time, loan_id))
     
     conn.commit()
     conn.close()
@@ -388,17 +367,6 @@ def return_item():
     print(f"SUCCESS: {eq_type} returned successfully. (Previously held by {prev_name})")
     print("Instruct the student to scan the QR code to submit the Return Survey on their way out!")
     
-    # Log the main serialized item
-    log_transaction("RETURN", barcode, eq_type, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
-    
-    # --- NEW: Explicitly log each bundled item return/loss ---
-    for item in returned_items_to_log:
-        log_transaction("RETURN (BUNDLE)", "N/A", item, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
-        
-    for item in lost_items_to_log:
-        # We log "LOST (BUNDLE)" so the boss knows they still owe it!
-        log_transaction("LOST (BUNDLE)", "N/A", item, prev_ucf, prev_name, prev_pos, prev_email, prev_dur)
-
     backup_to_cloud()
 
 def main():
