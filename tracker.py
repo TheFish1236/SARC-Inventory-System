@@ -8,7 +8,7 @@ import csv
 
 def backup_to_cloud():
     user_profile = os.environ.get('USERPROFILE')
-    base_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking")
+    base_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - SARC", "Technology Assistant", "Equipment Tracking")
     
     # 4 Data Endpoints
     onedrive_live = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Inventory.csv")
@@ -75,7 +75,7 @@ def backup_to_cloud():
 
 def sync_from_cloud():
     user_profile = os.environ.get('USERPROFILE')
-    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
+    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - SARC", "Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
     local_db = 'inventory.db'
 
     print(" Checking for cloud database updates...")
