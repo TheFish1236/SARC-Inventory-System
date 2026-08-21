@@ -1,62 +1,125 @@
 import sqlite3
 import csv
 import datetime
-import os
 import shutil
+import os
 
 def connect_db():
     return sqlite3.connect('inventory.db')
 
 def log_admin_action(action, barcode, details):
-    user_profile = os.environ.get('USERPROFILE')
     operator = os.environ.get('USERNAME', 'Unknown_Admin')
-    
-    log_path = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Admin_Log.csv")
-    
-    file_exists = os.path.isfile(log_path)
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    conn = connect_db()
+    cursor = conn.cursor()
     try:
-        with open(log_path, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(['Timestamp', 'Operator', 'Action', 'Target Barcode', 'Details'])
-            writer.writerow([current_time, operator, action, barcode, details])
-    except PermissionError:
-        print("Warning: Admin Log is open in Excel, could not append transaction.")
+        cursor.execute('''
+            INSERT INTO admin_logs (timestamp, operator, action, target_barcode, details)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (current_time, operator, action, barcode, details))
+        conn.commit()
     except Exception as e:
-        print(f"Warning: Could not write to Admin Log: {e}")
+        print(f"Warning: Could not write to admin_logs table: {e}")
+    finally:
+        conn.close()
 
 def backup_to_cloud():
     user_profile = os.environ.get('USERPROFILE')
-    onedrive_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Inventory.csv")
-    onedrive_bulk_csv = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "Live_Data_Feeds", "SARC_Live_Bulk.csv")
-    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
+    base_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking")
+    
+    # 4 Data Endpoints
+    onedrive_live = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Inventory.csv")
+    onedrive_bulk = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Bulk.csv")
+    onedrive_history = os.path.join(base_dir, "Live_Data_Feeds", "SARC_History_Log.csv")
+    onedrive_admin = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Admin_Log.csv")
+    
+    onedrive_db = os.path.join(base_dir, "System_Backups", "inventory_backup.db")
     
     conn = connect_db()
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT barcode_id, equipment_type, brand_model, status, current_ucf_id, current_name, current_position, current_email, current_duration, last_updated, notes, attached_bulk_items FROM serialized_assets")
-        rows = cursor.fetchall()
-        with open(onedrive_csv, 'w', newline='', encoding='utf-8') as f:
+        # 1. Export Live Serialized View
+        cursor.execute("SELECT * FROM vw_dashboard_live")
+        with open(onedrive_live, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Barcode ID', 'Type', 'Model', 'Status', 'UCF ID', 'Name', 'Position', 'Email', 'Duration', 'Last Updated', 'Notes', 'Attached Bulk Items'])
-            writer.writerows(rows)
+            writer.writerow([d[0] for d in cursor.description])
+            writer.writerows(cursor.fetchall())
             
+        # 2. Export Live Bulk Table
         cursor.execute("SELECT item_name, quantity, category, notes, last_updated FROM bulk_assets")
-        bulk_rows = cursor.fetchall()
-        with open(onedrive_bulk_csv, 'w', newline='', encoding='utf-8') as f:
+        with open(onedrive_bulk, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Item Name', 'Quantity', 'Category', 'Notes', 'Last Updated'])
-            writer.writerows(bulk_rows)
+            writer.writerow([d[0] for d in cursor.description])
+            writer.writerows(cursor.fetchall())
             
+        # 3. Export History Ledger 
+        cursor.execute('''
+            SELECT l.time_out AS Timestamp, 'CHECK-OUT' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.duration AS Details
+            FROM loans l
+            LEFT JOIN users u ON l.ucf_id = u.ucf_id
+            WHERE l.time_out IS NOT NULL
+            UNION ALL
+            SELECT l.time_in AS Timestamp, 'RETURN' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.attached_bulk AS Details
+            FROM loans l
+            LEFT JOIN users u ON l.ucf_id = u.ucf_id
+            WHERE l.time_in IS NOT NULL
+            UNION ALL
+            SELECT timestamp AS Timestamp, action_type AS Action, item_name AS Target, ucf_id AS UCF_ID, student_name AS Name, CAST(qty_change AS TEXT) AS Details
+            FROM bulk_transactions
+            ORDER BY Timestamp DESC
+        ''')
+        with open(onedrive_history, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Timestamp', 'Action', 'Target', 'UCF_ID', 'Name', 'Details'])
+            writer.writerows(cursor.fetchall())
+
+        # 4. Export Admin Logs
+        cursor.execute("SELECT timestamp, operator, action, target_barcode, details FROM admin_logs ORDER BY timestamp DESC")
+        with open(onedrive_admin, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Timestamp', 'Operator', 'Action', 'Target Barcode', 'Details'])
+            writer.writerows(cursor.fetchall())
+            
+        # 5. Backup the raw DB
         shutil.copy2('inventory.db', onedrive_db)
-        print("Live cloud backups synced to OneDrive.")
+        print("Data Pipeline Synced: Views and DB backed up to OneDrive.")
+        
     except Exception as e:
-        print(f"Cloud sync warning: {e}")
+        print(f"\nWARNING: Cloud sync failed: {e}")
     finally:
         conn.close()
+
+def sync_from_cloud():
+    user_profile = os.environ.get('USERPROFILE')
+    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
+    local_db = 'inventory.db'
+
+    print(" Checking for cloud database updates...")
+    
+    if not os.path.exists(onedrive_db):
+        print(" No cloud backup found in OneDrive. Proceeding with local only.")
+        return
+
+    try:
+        cloud_time = os.path.getmtime(onedrive_db)
+        local_time = os.path.getmtime(local_db) if os.path.exists(local_db) else 0
+
+        # If the OneDrive file was modified more recently than the local file
+        if cloud_time > local_time:
+            print("\n ALERT: A newer database version exists in the cloud!")
+            choice = input("Do you want to PULL the latest database from OneDrive? (Y/N): ").strip().upper()
+            if choice == 'Y':
+                shutil.copy2(onedrive_db, local_db)
+                print(" SUCCESS: Local database updated from cloud.")
+            else:
+                print(" WARNING: You are proceeding with an OUTDATED local database. Overwrites may occur.")
+        else:
+            print(" Local database is up to date.")
+            
+    except Exception as e:
+        print(f" OFFLINE WARNING: Could not sync from cloud. Proceed with caution. ({e})")
 
 def add_new_asset():
     print("\n--- INGEST NEW SERIALIZED ASSET ---")
@@ -73,12 +136,12 @@ def add_new_asset():
     cursor = conn.cursor()
 
     try:
+        # Changed from serialized_assets to equipment
         cursor.execute('''
-            INSERT INTO serialized_assets 
-            (barcode_id, equipment_type, brand_model, service_tag, status, notes, default_kit, 
-             attached_bulk_items, current_ucf_id, current_name, current_position, current_email, current_duration, last_updated)
-            VALUES (?, ?, ?, ?, 'Available', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)
-        ''', (barcode_id, equipment_type, brand_model, service_tag, notes, default_kit, current_time))
+            INSERT INTO equipment 
+            (barcode_id, equipment_type, brand_model, service_tag, default_kit, notes, status, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, 'Available', ?)
+        ''', (barcode_id, equipment_type, brand_model, service_tag, default_kit, notes, current_time))
         
         conn.commit()
         print(f"SUCCESS: Added {barcode_id} to live database as Available.")
@@ -88,24 +151,6 @@ def add_new_asset():
         return
     finally:
         conn.close()
-
-    source_csv_path = os.path.join('source_data', 'serialized_assets.csv')
-    try:
-        needs_newline = False
-        if os.path.exists(source_csv_path):
-            with open(source_csv_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if content and not content.endswith('\n'):
-                    needs_newline = True
-
-        with open(source_csv_path, 'a', newline='', encoding='utf-8') as f:
-            if needs_newline:
-                f.write('\n')
-            writer = csv.writer(f)
-            writer.writerow([barcode_id, equipment_type, brand_model, service_tag, 'Available', notes, default_kit, ''])
-        print(f"Appended {barcode_id} to source_data/serialized_assets.csv")
-    except Exception as e:
-        print(f"Warning: Could not update source CSV: {e}")
 
     log_admin_action("INGEST_ASSET", barcode_id, f"Added {brand_model} | SN: {service_tag} | Kit: {default_kit}")
     backup_to_cloud()
@@ -141,24 +186,6 @@ def add_new_bulk_asset():
     finally:
         conn.close()
 
-    source_csv_path = os.path.join('source_data', 'bulk_assets.csv')
-    try:
-        needs_newline = False
-        if os.path.exists(source_csv_path):
-            with open(source_csv_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if content and not content.endswith('\n'):
-                    needs_newline = True
-
-        with open(source_csv_path, 'a', newline='', encoding='utf-8') as f:
-            if needs_newline:
-                f.write('\n')
-            writer = csv.writer(f)
-            writer.writerow([item_name, quantity, category, notes])
-        print(f"Appended {item_name} to source_data/bulk_assets.csv")
-    except Exception as e:
-        print(f"Warning: Could not update source CSV: {e}")
-
     log_admin_action("INGEST_BULK", "N/A", f"Added {quantity}x {item_name} in {category}")
     backup_to_cloud()
 
@@ -168,7 +195,9 @@ def delete_or_surplus_asset():
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT brand_model, status FROM serialized_assets WHERE barcode_id = ?", (barcode_id,))
+    
+    # Changed from serialized_assets to equipment
+    cursor.execute("SELECT brand_model, status FROM equipment WHERE barcode_id = ?", (barcode_id,))
     result = cursor.fetchone()
     
     if not result:
@@ -185,14 +214,14 @@ def delete_or_surplus_asset():
     
     if choice == '1':
         reason = input("Enter reason for surplus/unavailability: ").strip()
-        cursor.execute("UPDATE serialized_assets SET status = 'Unavailable', notes = ?, last_updated = ? WHERE barcode_id = ?", (f"Surplused: {reason}", current_time, barcode_id))
+        cursor.execute("UPDATE equipment SET status = 'Unavailable', notes = ?, last_updated = ? WHERE barcode_id = ?", (f"Surplused: {reason}", current_time, barcode_id))
         conn.commit()
         print(f"SUCCESS: {barcode_id} marked as Unavailable.")
         log_admin_action("SURPLUS_ASSET", barcode_id, f"Status set to Unavailable. Reason: {reason}")
     elif choice == '2':
-        confirm = input(f"ARE YOU SURE you want to permanently delete {barcode_id}? (Y/N): ").strip().upper()
+        confirm = input(f"ARE YOU SURE you want to permanently delete {barcode_id}? This will orphan history logs! (Y/N): ").strip().upper()
         if confirm == 'Y':
-            cursor.execute("DELETE FROM serialized_assets WHERE barcode_id = ?", (barcode_id,))
+            cursor.execute("DELETE FROM equipment WHERE barcode_id = ?", (barcode_id,))
             conn.commit()
             print(f"SUCCESS: Permanently deleted {barcode_id} from database.")
             log_admin_action("HARD_DELETE", barcode_id, "Permanently removed record from database.")
@@ -208,7 +237,9 @@ def swap_or_update_tags():
     
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT brand_model, service_tag, default_kit FROM serialized_assets WHERE barcode_id = ?", (barcode_id,))
+    
+    # Changed from serialized_assets to equipment
+    cursor.execute("SELECT brand_model, service_tag, default_kit FROM equipment WHERE barcode_id = ?", (barcode_id,))
     result = cursor.fetchone()
     
     if not result:
@@ -231,10 +262,10 @@ def swap_or_update_tags():
     details = []
     
     if new_tag:
-        cursor.execute("UPDATE serialized_assets SET service_tag = ?, last_updated = ? WHERE barcode_id = ?", (new_tag, current_time, barcode_id))
+        cursor.execute("UPDATE equipment SET service_tag = ?, last_updated = ? WHERE barcode_id = ?", (new_tag, current_time, barcode_id))
         details.append(f"SN changed: '{old_tag}' -> '{new_tag}'")
     if new_kit:
-        cursor.execute("UPDATE serialized_assets SET default_kit = ?, last_updated = ? WHERE barcode_id = ?", (new_kit, current_time, barcode_id))
+        cursor.execute("UPDATE equipment SET default_kit = ?, last_updated = ? WHERE barcode_id = ?", (new_kit, current_time, barcode_id))
         details.append(f"Kit changed: '{old_kit}' -> '{new_kit}'")
         
     conn.commit()
@@ -247,16 +278,75 @@ def swap_or_update_tags():
     else:
         print("No changes entered.")
 
+def correct_user_ucf_id():
+    print("\n--- CORRECT USER UCF ID (GLOBAL REPLACE) ---")
+    old_ucf_id = input("Enter the WRONG 7-digit UCF ID currently in the system: ").strip()
+    
+    conn = connect_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT name, position, email, last_updated FROM users WHERE ucf_id = ?", (old_ucf_id,))
+    user_data = cursor.fetchone()
+    
+    if not user_data:
+        print(f"ERROR: UCF ID '{old_ucf_id}' not found in the users table.")
+        conn.close()
+        return
+        
+    student_name = user_data[0]
+    print(f"\nFound User: {student_name} (ID: {old_ucf_id})")
+    
+    new_ucf_id = input("Enter the CORRECT 7-digit UCF ID: ").strip()
+    
+    if len(new_ucf_id) != 7 or not new_ucf_id.isdigit():
+        print("ERROR: Invalid UCF ID format. Must be 7 digits.")
+        conn.close()
+        return
+        
+    if old_ucf_id == new_ucf_id:
+        print("ERROR: The new ID is the same as the old ID.")
+        conn.close()
+        return
+        
+    cursor.execute('''
+        INSERT INTO users (ucf_id, name, position, email, last_updated)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(ucf_id) DO UPDATE SET 
+        name=excluded.name, position=excluded.position, email=excluded.email, last_updated=excluded.last_updated
+    ''', (new_ucf_id, user_data[0], user_data[1], user_data[2], user_data[3]))
+        
+    cursor.execute("UPDATE loans SET ucf_id = ? WHERE ucf_id = ?", (new_ucf_id, old_ucf_id))
+    loans_updated = cursor.rowcount
+    
+    cursor.execute("UPDATE bulk_transactions SET ucf_id = ? WHERE ucf_id = ?", (new_ucf_id, old_ucf_id))
+    bulk_updated = cursor.rowcount
+    
+    cursor.execute("DELETE FROM users WHERE ucf_id = ?", (old_ucf_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"\nSUCCESS: Transferred all records from {old_ucf_id} to {new_ucf_id}.")
+    print(f" -> Updated {loans_updated} serialized loan records.")
+    print(f" -> Updated {bulk_updated} bulk transaction records.")
+    
+    log_admin_action("FIX_TYPO_ID", "GLOBAL", f"Changed UCF ID from {old_ucf_id} to {new_ucf_id} across {loans_updated} loans and {bulk_updated} bulk items")
+    backup_to_cloud()
+
 def main():
+    sync_from_cloud()
     while True:
         print("\n=== SARC DATABASE ADMIN CONTROL PANEL ===")
         print("1. Ingest New Serialized Asset")
         print("2. Ingest New Bulk Asset")
         print("3. Surplus or Delete Asset")
         print("4. Update Service Tag or Default Kit")
-        print("5. Exit")
+        print("5. Correct User UCF ID (Global Replace)")
+        print("6. Sync Changes from Cloud")
+        print("7. Backup Changes to Cloud")
+        print("8. Exit")
         
-        choice = input("\nSelect option (1-5): ").strip()
+        choice = input("\nSelect option (1-8): ").strip()
         
         if choice == '1':
             add_new_asset()
@@ -267,6 +357,12 @@ def main():
         elif choice == '4':
             swap_or_update_tags()
         elif choice == '5':
+            correct_user_ucf_id()
+        elif choice == '6':
+            sync_from_cloud()
+        elif choice == '7':
+            backup_to_cloud()
+        elif choice == '8':
             print("Exiting Admin Control Panel.")
             break
         else:

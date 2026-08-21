@@ -8,12 +8,13 @@ import csv
 
 def backup_to_cloud():
     user_profile = os.environ.get('USERPROFILE')
-    base_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - SARC", "Technology Assistant", "Equipment Tracking")
+    base_dir = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking")
     
-    # Our 3 "API Endpoints" for Power BI / Excel
+    # 4 Data Endpoints
     onedrive_live = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Inventory.csv")
     onedrive_bulk = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Live_Bulk.csv")
     onedrive_history = os.path.join(base_dir, "Live_Data_Feeds", "SARC_History_Log.csv")
+    onedrive_admin = os.path.join(base_dir, "Live_Data_Feeds", "SARC_Admin_Log.csv")
     
     onedrive_db = os.path.join(base_dir, "System_Backups", "inventory_backup.db")
     
@@ -35,7 +36,7 @@ def backup_to_cloud():
             writer.writerow([d[0] for d in cursor.description])
             writer.writerows(cursor.fetchall())
             
-        # 3. Export History Ledger (Now with NAMES!)
+        # 3. Export History Ledger 
         cursor.execute('''
             SELECT l.time_out AS Timestamp, 'CHECK-OUT' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.duration AS Details
             FROM loans l
@@ -53,11 +54,17 @@ def backup_to_cloud():
         ''')
         with open(onedrive_history, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            # Added 'Name' to the headers
             writer.writerow(['Timestamp', 'Action', 'Target', 'UCF_ID', 'Name', 'Details'])
             writer.writerows(cursor.fetchall())
+
+        # 4. Export Admin Logs
+        cursor.execute("SELECT timestamp, operator, action, target_barcode, details FROM admin_logs ORDER BY timestamp DESC")
+        with open(onedrive_admin, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Timestamp', 'Operator', 'Action', 'Target Barcode', 'Details'])
+            writer.writerows(cursor.fetchall())
             
-        # 4. Backup the raw DB for Disaster Recovery
+        # 5. Backup the raw DB
         shutil.copy2('inventory.db', onedrive_db)
         print("Data Pipeline Synced: Views and DB backed up to OneDrive.")
         
@@ -65,6 +72,36 @@ def backup_to_cloud():
         print(f"\nWARNING: Cloud sync failed: {e}")
     finally:
         conn.close()
+
+def sync_from_cloud():
+    user_profile = os.environ.get('USERPROFILE')
+    onedrive_db = os.path.join(user_profile, "OneDrive - University of Central Florida", "UCFTeam-SARC_GRP - Technology Assistant", "Equipment Tracking", "System_Backups", "inventory_backup.db")
+    local_db = 'inventory.db'
+
+    print(" Checking for cloud database updates...")
+    
+    if not os.path.exists(onedrive_db):
+        print(" No cloud backup found in OneDrive. Proceeding with local only.")
+        return
+
+    try:
+        cloud_time = os.path.getmtime(onedrive_db)
+        local_time = os.path.getmtime(local_db) if os.path.exists(local_db) else 0
+
+        # If the OneDrive file was modified more recently than the local file
+        if cloud_time > local_time:
+            print("\n ALERT: A newer database version exists in the cloud!")
+            choice = input("Do you want to PULL the latest database from OneDrive? (Y/N): ").strip().upper()
+            if choice == 'Y':
+                shutil.copy2(onedrive_db, local_db)
+                print(" SUCCESS: Local database updated from cloud.")
+            else:
+                print(" WARNING: You are proceeding with an OUTDATED local database. Overwrites may occur.")
+        else:
+            print(" Local database is up to date.")
+            
+    except Exception as e:
+        print(f" OFFLINE WARNING: Could not sync from cloud. Proceed with caution. ({e})")
 
 def parse_ucf_id(raw_input):
     raw_input = raw_input.strip() 
@@ -370,17 +407,21 @@ def return_item():
     backup_to_cloud()
 
 def main():
-    print("\nSARC INVENTORY MANAGEMENT SYSTEM")
+    print("\n=== SARC INVENTORY MANAGEMENT SYSTEM ===")
+    
+    # 1. Automatically check for updates on startup!
+    sync_from_cloud()
     
     while True:
         print("\nMain Menu:")
         print("1. Check-Out Equipment")
         print("2. Return Equipment")
         print("3. Bulk Inventory Menu")
-        print("4. Exit")
-        print("5. Backup & Exit")
+        print("4. Backup to Cloud (Push)")
+        print("5. Sync from Cloud (Pull)")
+        print("6. Exit")
         
-        choice = input("\nSelect an option (1-5): ")
+        choice = input("\nSelect an option (1-6): ").strip()
         
         if choice == '1':
             checkout_item()
@@ -389,14 +430,14 @@ def main():
         elif choice == '3':
             handle_bulk_inventory()
         elif choice == '4':
-            print("Shutting down tracker. Goodbye!")
-            break
-        elif choice == '5':
             backup_to_cloud()
+        elif choice == '5':
+            sync_from_cloud()
+        elif choice == '6':
             print("Shutting down tracker. Goodbye!")
             break
         else:
-            print("Invalid choice. Please type 1, 2, 3, 4, or 5.")
+            print("Invalid choice. Please type a number 1-6.")
 
 if __name__ == "__main__":
     main()
