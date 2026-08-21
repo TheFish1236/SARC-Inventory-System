@@ -314,7 +314,7 @@ def checkout_item():
                     cursor.execute("UPDATE bulk_assets SET quantity = quantity - 1 WHERE item_name = ?", (item,))
                     
                     # Log bulk component native transaction
-                    cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, -1, ?, ?, ?, CURRENT_TIMESTAMP)", (item, "CHECK-OUT (BUNDLE)", ucf_id, student_name))
+                    cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, -1, ?, ?, ?, ?)", (item, "CHECK-OUT (BUNDLE)", ucf_id, student_name, current_time))
                     assigned_bulk.append(item)
             else:
                 print(f"   WARNING: {item} is out of stock in bulk inventory!")
@@ -385,10 +385,10 @@ def return_item():
             choice = input(f"   Did they return the {item}? (Press ENTER for Yes, 'N' for No): ").strip().upper()
             if choice != 'N':
                 cursor.execute("UPDATE bulk_assets SET quantity = quantity + 1 WHERE item_name = ?", (item,))
-                cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, 1, 'RETURN (BUNDLE)', ?, ?, CURRENT_TIMESTAMP)", (item, prev_ucf, prev_name))
+                cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, 1, 'RETURN (BUNDLE)', ?, ?, ?)", (item, prev_ucf, prev_name, current_time))
             else:
                 print(f"   EXCEPTION: {item} was NOT returned. Leaving unreplenished in bulk system.")
-                cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, 0, 'LOST (BUNDLE)', ?, ?, CURRENT_TIMESTAMP)", (item, prev_ucf, prev_name))
+                cursor.execute("INSERT INTO bulk_transactions (item_name, qty_change, action_type, ucf_id, student_name, timestamp) VALUES (?, 0, 'LOST (BUNDLE)', ?, ?, ?)", (item, prev_ucf, prev_name, current_time))
 
     new_note = input("\nAdd a note to this item? (Press ENTER to skip): ").strip()
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
