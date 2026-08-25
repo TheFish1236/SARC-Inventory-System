@@ -36,14 +36,14 @@ def backup_to_cloud():
             writer.writerow([d[0] for d in cursor.description])
             writer.writerows(cursor.fetchall())
             
-        # 3. Export History Ledger 
+        # 3. Export History Ledger (FIXED: Now dynamically pulls action_out and action_in!)
         cursor.execute('''
-            SELECT l.time_out AS Timestamp, 'CHECK-OUT' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.duration AS Details
+            SELECT l.time_out AS Timestamp, l.action_out AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.duration AS Details
             FROM loans l
             LEFT JOIN users u ON l.ucf_id = u.ucf_id
             WHERE l.time_out IS NOT NULL
             UNION ALL
-            SELECT l.time_in AS Timestamp, 'RETURN' AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.attached_bulk AS Details
+            SELECT l.time_in AS Timestamp, l.action_in AS Action, l.barcode_id AS Target, l.ucf_id AS UCF_ID, u.name AS Name, l.attached_bulk AS Details
             FROM loans l
             LEFT JOIN users u ON l.ucf_id = u.ucf_id
             WHERE l.time_in IS NOT NULL
@@ -220,6 +220,7 @@ def handle_bulk_inventory():
     backup_to_cloud()
 
 def checkout_item():
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     raw_swipe = input("\nSwipe Card (or type 7-digit UCF ID): ")
 
     if raw_swipe.upper().startswith("SARC-"):
