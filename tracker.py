@@ -351,6 +351,7 @@ def checkout_item():
     backup_to_cloud()
 
 def return_item():
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     barcode = input("\nScan Equipment Barcode to Return: ")
     
     conn = connect_db()
