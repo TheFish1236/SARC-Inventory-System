@@ -1,161 +1,167 @@
 # SARC Equipment Inventory System
 
 ## Overview
-The SARC Equipment Inventory System is a lightweight, on-premises asset management application designed for the UCF Student Academic Resource Center (SARC). It replaces a manual, spreadsheet-based system with a relational database and automates the checkout and return workflows of departmental technology (laptops, iPads, and accessories). 
+The SARC Equipment Inventory System is an asset tracking and lifecycle management application built for the UCF Student Academic Resource Center. It replaces a legacy spreadsheet system with a SQLite database, automating the distribution, return, and auditing workflows of departmental technology (laptops, iPads, audio equipment, and peripherals).
 
-The system operates entirely within the university network boundary, integrating USB hardware wedges (magnetic stripe card readers and barcode scanners) with local database storage and asynchronous cloud API validation to maintain FERPA compliance and an audit trail.
+Operating strictly within the university intranet to comply with IT regulations, the system combines physical USB hardware with asynchronous cloud API verification and a local-to-cloud automated data pipeline.
 
 ---
 
-## System Architecture & Data Flow
+## Architecture & Data Pipeline
 
-The application is structured around a local-first, data-driven architecture. 
+The system is built on an on-premises, decoupled architecture that isolates operational database writes from executive reporting views.
 
 ```
-[Student Device] ➔ [Qualtrics Cloud]
-                          │ (asynchronous survey submission)
-                          ▼
-[Kiosk Laptop]   ➔ [Qualtrics API] (12-hour freshness check)
-   │ (hardware)           │
-   ├── [USB Swiper] ➔ [ID Parsing] ➔ DB Verification (True/False)
-   └── [USB Scanner] ➔ [Barcode]   ➔ SQLite State Update
-                                         │
-                                         ├── ➔ [Local inventory.db]
-                                         ├── ➔ [SARC_History_Log.csv] (Ledger)
-                                         └── ➔ [OneDrive Sync Folder] (Boss View)
+[Borrower Device] ➔ [Qualtrics Cloud]
+                           │ (Survey Payload)
+                           ▼
+ [Kiosk Terminal] ➔ [Qualtrics API] (12-Hour Freshness Check)
+        │                  │
+        ├── [USB Swiper (Optional, can be typed)]   ➔ [RegEx Parser] ➔ Identity Verification
+        └── [USB Scanner (Optional, can be typed)]  ➔ [Data Matrix Scan]     ➔ Relational State Transition
+                                                                                │
+                                                                                ▼
+                                                                        [SQLite Engine]
+                                                                        ├── equipment
+                                                                        ├── users
+                                                                        ├── loans (Active/History)
+                                                                        └── bulk_assets
+                                                                                │
+                                                                                ▼ (SQL Views)
+                                                                        [Automated Cloud Export]
+                                                                        ├── SARC_Live_Inventory.csv
+                                                                        ├── SARC_Live_Bulk.csv
+                                                                        └── SARC_History_Log.csv
+                                                                                │
+                                                                                ▼
+                                                                        [Power BI & Excel Dashboards]
 ```
 
-1. **Transaction Authorization:** The student submits a digital liability agreement via Qualtrics on their personal device.
-2. **Identity Verification:** The operator swipes the student's ID card. The local script parses the raw Track 1 magnetic stripe data to isolate the 7-digit UCF ID. 
-3. **API Polling:** The system polls the Qualtrics API, retrieves the JSON survey payload, parses the timestamps, and verifies if a matching, completed agreement exists from the last 12 hours.
-4. **Asset Matching & Bundling:** Once verified, the operator scans the physical asset's 2D Data Matrix barcode. The system reads the database for any pre-configured accessory bundles (e.g., charging bricks, cables) and prompts the operator to dynamically include or exclude those items.
-5. **State & Ledger Synchronization:** The local SQLite database updates the asset status. Simultaneously, the event is appended to a local CSV history ledger, and the entire database is copied to a shared SharePoint/OneDrive folder for remote administrator reporting.
+### Key Architectural Decisions:
+1. **Decoupled Reporting Layer:** Rather than exposing the active SQLite database directly in shared cloud environments (which causes file locking and corruption over syncing engines), the local backend generates structured, read-only analytical feeds via SQL Views. These feeds are then ingested by Power BI and Excel Power Query dashboards.
+2. **Bidirectional State Sync:** To allow administrative maintenance on desktop workstations while checkouts run on a dedicated Kiosk laptop, the system uses timestamp-based differential synchronization (`sync_from_cloud()`) on initialization to prevent split-brain state conflicts.
+3. **Data-Driven Hardware Bundling:** Accessories and chargers are linked dynamically via database records (`default_kit`) rather than hardcoded logic trees, prompting operators during transactions and automatically tracking attached accessories during return verification.
 
 ---
 
 ## Technical Features
 
-* **Asynchronous API Integration:** Pulls compressed ZIP files of survey responses from Qualtrics in memory, extracts the raw JSON payloads, and parses them using multi-field criteria (finished states, custom question IDs, and ISO-8601 timestamps).
-* **Fault-Tolerant Input Parsing:** Parses raw keyboard-wedge inputs. Isolates 7-digit IDs from raw Track 1 financial-card format, handles backward swipes, and rejects accidental equipment scans during the ID prompt using string prefix matching.
-* **Graceful Degradation (Offline Mode):** If a network dropout occurs during API polling, the script catches the connection error and prompts the operator to trigger a manual administrative override, ensuring business operations are never blocked by infrastructure failures.
-* **Conflict-Free Cloud Syncing:** Designed with write-locked exception handling. If an administrator has the synced OneDrive reporting files open in desktop Excel, the local transaction proceeds normally, caches the data in SQLite, and deferentially syncs to the cloud on the next successful write.
-* **Declarative Database Rebuilds:** Built with separate schema provisioning and transactional state tracking. Relies on structured source CSV files to construct and populate the relational tables dynamically, ensuring clean migrations when physical inventory changes.
+* **Relational Schema Enforcement (3NF):** Completely decouples physical hardware attributes from user identities and transactional states, eliminating null-heavy tables and enforcing referential integrity across all loans.
+* **Asynchronous Cloud API Validation:** Connects to the Qualtrics v3 API using compressed ZIP extractions in memory, enforcing a strict 12-hour validity window on digital signatures to prevent authorization replay attacks.
+* **Hardware Wedge Stream Parsing:** Uses custom regular expressions to clean messy magnetic stripe inputs, dynamically isolating 7-digit student IDs from raw Track 1 card formats while preventing accidental barcode collisions.
+* **Graceful Degradation & Overrides:** Includes an override mode that allows operators to bypass network dropouts, use cached or expired form metadata, and maintain operations during network outages.
+* **Compliance & Auditing Suite:** Includes standalone analytical utilities (`audit_returns.py`, `audit_overdue.py`) that query the database engine to generate hit-lists of unreturned assets and missing liability signatures.
+* **Live Administration Toolkit:** Features an isolated control panel (`admin_tools.py`) allowing administrators to ingest new serialized/bulk hardware, surplus decommissioned assets, or execute global primary key corrections without taking the live checkout kiosk offline.
 
 ---
 
-## Tech Stack & Environment
-* **Language:** Python 3 (libraries: `sqlite3`, `requests`, `python-dotenv`, `csv`, `shutil`)
-* **Database:** SQLite3
-* **Hardware:** USB 2D Barcode Scanner, USB Magnetic Stripe Card Reader (Track 1 compatible)
-* **Environment:** Windows (Local On-Premises Host)
+## Relational Database Schema (3NF)
 
----
+The database schema is normalized to Third Normal Form (3NF) to eliminate data redundancy and ensure transactional integrity.
 
-## Database Schema
+### Table: `equipment`
+Stores static hardware definitions, serials, and base operational availability.
+* `barcode_id` (TEXT, PK): Unique departmental asset tag (e.g., `SARC-Laptop-01`)
+* `equipment_type` (TEXT): Asset classification (Laptop, Tablet, Projector, etc.)
+* `brand_model` (TEXT): Manufacturer specifications
+* `service_tag` (TEXT): Hardware serial number / Dell Service Tag
+* `default_kit` (TEXT): Pipe-delimited list of default bundled bulk accessories
+* `notes` (TEXT): Permanent hardware notes and physical maintenance flags
+* `status` (TEXT): Asset state (`Available`, `Checked Out`, `Unavailable`)
+* `last_updated` (TEXT): ISO-8601 timestamp
 
-### Table: `serialized_assets`
-Stores the static hardware definitions and active transaction states of uniquely serialized equipment.
+### Table: `users`
+Stores unique student, faculty, and staff identity records.
+* `ucf_id` (TEXT, PK): Unique 7-digit institutional identifier
+* `name` (TEXT): Full borrower name
+* `position` (TEXT): Departmental role (Tutor, SI Leader, Staff, etc.)
+* `email` (TEXT): Borrower email address
+* `last_updated` (TEXT): ISO-8601 timestamp
 
-| Column | Type | Description |
-| :--- | :--- | :--- |
-| `barcode_id` | TEXT (PK) | Primary Key (e.g., SARC-Laptop-01, SARC-iPad-05) |
-| `equipment_type` | TEXT | Category of asset (Laptop, Tablet, Projector) |
-| `brand_model` | TEXT | Specific manufacturer model (Dell Latitude 7420, iPad Air 4th Gen) |
-| `service_tag` | TEXT | Manufacturer serial number |
-| `status` | TEXT | Asset state (Available, Checked Out, In Repair, Unavailable) |
-| `notes` | TEXT | Append-only history of physical notes and maintenance flags |
-| `default_kit` | TEXT | Target bulk accessories bundled with this asset |
-| `attached_bulk_items` | TEXT | Bulk items currently checked out with this specific asset |
-| `current_ucf_id` | TEXT | UCF ID of the borrowing student (NULL if available) |
-| `current_name` | TEXT | Name of the borrowing student (NULL if available) |
-| `current_position` | TEXT | Role of the borrower (Tutor, SI Leader, Staff) |
-| `current_email` | TEXT | UCF Email of the borrower |
-| `current_duration` | TEXT | Intended loan length (e.g., Fall 2026) |
-| `last_updated` | TEXT | Timestamp of the most recent transaction |
+### Table: `loans`
+Manages both active states and historical checkout lifecycles via timestamp verification.
+* `transaction_id` (INTEGER, PK, AUTOINCREMENT): Unique loan event ID
+* `barcode_id` (TEXT, FK): References `equipment(barcode_id)`
+* `ucf_id` (TEXT, FK): References `users(ucf_id)`
+* `time_out` (TEXT): Timestamp when item departed the closet
+* `time_in` (TEXT): Timestamp when returned (`NULL` indicates active checkout)
+* `duration` (TEXT): Approved loan duration (e.g., `Fall 2026`)
+* `attached_bulk` (TEXT): Specific bulk accessories loaned with this asset
+* `action_out` (TEXT): Checkout classification (`CHECK-OUT`, `CHECK-OUT (OVERRIDE)`)
+* `action_in` (TEXT): Return classification (`RETURN`, `RETURN (OVERRIDE)`)
 
 ### Table: `bulk_assets`
-Stores stock levels of interchangeable commodities (peripherals, chargers, adapters).
+Maintains live quantity stock counts for unbarcoded commodities.
+* `item_name` (TEXT, PK): Unique commodity description (e.g., `Dell 65W C-type Charger`)
+* `quantity` (INTEGER): Active count on hand
+* `category` (TEXT): Classification (Chargers, Cables, Peripherals, Adapters)
+* `notes` (TEXT): Cabinet location or storage details
+* `last_updated` (TEXT): ISO-8601 timestamp
 
-| Column | Type | Description |
-| :--- | :--- | :--- |
-| `item_name` | TEXT (PK) | Primary Key (e.g., Dell 65W C-type Charger, USB Mouse) |
-| `quantity` | INTEGER | Active stock count currently in the storage closet |
-| `category` | TEXT | Category grouping (Charger, Peripherals, Cables, Power) |
-| `notes` | TEXT | Storage location or administrative details |
-| `last_updated` | TEXT | Timestamp of the most recent stock level adjustment |
+### Table: `bulk_transactions`
+Ledger tracking arithmetic increments/decrements for bulk stock.
+* `transaction_id` (INTEGER, PK, AUTOINCREMENT)
+* `item_name` (TEXT, FK): References `bulk_assets(item_name)`
+* `qty_change` (INTEGER): Positive (return) or negative (distribution) value
+* `action_type` (TEXT): Event description
+* `ucf_id` (TEXT): Operator or recipient identifier
+* `student_name` (TEXT): Recipient name
+* `timestamp` (TEXT): ISO-8601 timestamp
+
+### Table: `admin_logs`
+Immutable audit log tracking all administrative interventions.
+* `log_id` (INTEGER, PK, AUTOINCREMENT)
+* `timestamp` (TEXT): Time of administrative action
+* `operator` (TEXT): Windows username executing the action
+* `action` (TEXT): Action type (`INGEST_ASSET`, `SURPLUS_ASSET`, `FIX_TYPO_ID`)
+* `target_barcode` (TEXT): Modified entity
+* `details` (TEXT): Specific values altered or before/after changes
+
+---
+
+## SQL Reporting Views
+
+* **`vw_dashboard_live`:** Joins `equipment`, active `loans` (`time_in IS NULL`), and `users` to present a unified real-time dashboard of all serialized assets, current holders, and outstanding accessories.
+* **`vw_loan_history`:** Joins closed `loans` (`time_in IS NOT NULL`), `equipment`, and `users` to supply a complete, chronological record of equipment returns.
 
 ---
 
 ## Configuration & Environment Variables
 
-The application requires a `.env` file in the root directory to store sensitive API credentials and specific survey IDs. This file is ignored by Git to prevent credential exposure.
+Environment variables are isolated in a local `.env` file to prevent credential exposure in version control:
 
 ```text
-QUALTRICS_API_TOKEN=your_qualtrics_api_token_here
+QUALTRICS_API_TOKEN=your_token_here
 DATA_CENTER=ca1.qualtrics.com
-SURVEY_REQUEST=SV_your_request_survey_id_here
-SURVEY_CHECKOUT=SV_your_checkout_survey_id_here
-SURVEY_RETURN=SV_your_return_survey_id_here
+SURVEY_REQUEST=SV_xxx
+SURVEY_CHECKOUT=SV_xxx
+SURVEY_RETURN=SV_xxx
 ```
 
 ---
 
-## Directory Structure
+## Setup & Deployment
 
-```text
-SARC_Inventory_App/
-│   .env                    # Ignored by Git (API credentials)
-│   .gitignore              # Specifies untracked files
-│   README.md               # System documentation
-│   run_kiosk.bat           # Desktop batch execution shortcut
-│   tracker.py              # Main kiosk transaction loop
-│   qualtrics_api.py        # Asynchronous Qualtrics API integrations
-│   setup_databases.py      # Database provisioning script
-│   inventory.db            # Live local SQLite database
-│   get_QID.py              # Development utility for mapping survey schema
-│
-└── source_data/            # Static baseline provisioning files
-    ├── serialized_assets.csv
-    └── bulk_assets.csv
+### 1. Environment Configuration
+Ensure Python 3.10+ and Git are installed. Clone the repository and install dependencies locally:
+
+```cmd
+git clone https://github.com/TheFish1236/SARC-Inventory-System.git
+cd SARC-Inventory-System
+python -m pip install --user -r requirements.txt
 ```
+
+### 2. Live Operations
+* **Launch Kiosk:** Run `run_kiosk.bat` or execute `python tracker.py`.
+* **Launch Administrative Tools:** Execute `python admin_tools.py` to access hardware ingestion, asset surplusing, or identity corrections.
+* **Run Audits:** Execute `python audit_returns.py` or `python audit_overdue.py` to parse compliance exceptions directly from the database engine.
 
 ---
 
-## Setup and Installation
+## Project Status
 
-### 1. Provisioning the Local Environment
-Ensure Python 3.x is installed on the host machine. Create your virtual environment and install the required dependencies:
+The SARC Equipment Inventory System has completed its active development lifecycle and is currently in stable production, supporting live operations starting Fall 2026.
 
-```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/Scripts/activate
-
-# Install required external libraries
-pip install requests python-dotenv
-```
-
-### 2. Initializing the Database
-Ensure your baseline files (`serialized_assets.csv` and `bulk_assets.csv`) are configured inside the `source_data/` folder. Run the setup script to build the relational tables, import the baselines, and push the initial backups to OneDrive:
-
-```bash
-python setup_databases.py
-```
-
-### 3. Running the Kiosk
-Launch the main application interface:
-
-```bash
-python tracker.py
-```
-*(Alternatively, execute `run_kiosk.bat` directly or through a shortcut on the Windows desktop to launch the system quickly in a dedicated kiosk CLI).*
-
----
-
-## Roadmap
-
-- [x] Phase 1: Python terminal logic and SQLite schema definition.
-- [x] Phase 2: Bulk CSV import pipeline and data-driven schema migrations.
-- [x] Phase 3: Hardware integration (USB Barcode Scanner & USB Magstripe Reader parsing).
-- [ ] Phase 4: Local Web Application (Flask) hosted internally to replace the CLI with a multi-user browser interface.
-- [ ] Phase 5: Automated weekly reporting scripts (generating unreturned asset lists and automated student email reminders).
+*   **Production Deployment:** Successfully provisioned across dedicated on-premises hardware.
+*   **Architectural Hardening:** Evaluated and successfully migrated from an initial flat-file CSV model to a fully normalized (3NF) relational architecture.
+*   **Interface Selection:** Implemented an enterprise ETL reporting pipeline utilizing Power BI and Excel Power Query over local SharePoint endpoints, bypassing any form of hosting to eliminate an attack surface and comply with strict university firewall policies.
